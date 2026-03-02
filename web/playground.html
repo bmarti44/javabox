@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JavaBox Playground</title>
+
+  <!-- Monaco Editor (code editor) -->
+  <link rel="stylesheet" data-name="vs/editor/editor.main"
+        href="https://cdn.jsdelivr.net/npm/monaco-editor@0.46.0/min/vs/editor/editor.main.css" />
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1e1e2e;
+      color: #cdd6f4;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      padding: 10px 16px;
+      background: #181825;
+      border-bottom: 1px solid #313244;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+
+    header h1 { font-size: 16px; font-weight: 600; color: #cba6f7; }
+
+    .toolbar {
+      margin-left: auto;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    button {
+      padding: 6px 16px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #btn-compile { background: #89b4fa; color: #1e1e2e; }
+    #btn-run     { background: #a6e3a1; color: #1e1e2e; }
+    #btn-clear   { background: #313244; color: #cdd6f4; }
+
+    #status {
+      font-size: 12px;
+      color: #6c7086;
+      padding: 4px 10px;
+      background: #313244;
+      border-radius: 4px;
+    }
+    #status.booting  { color: #f9e2af; }
+    #status.ready    { color: #a6e3a1; }
+    #status.running  { color: #89dceb; }
+    #status.error    { color: #f38ba8; }
+
+    .main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    .editor-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid #313244;
+    }
+
+    .panel-header {
+      padding: 6px 12px;
+      background: #181825;
+      border-bottom: 1px solid #313244;
+      font-size: 12px;
+      color: #6c7086;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .panel-header .filename {
+      color: #cdd6f4;
+      font-weight: 500;
+    }
+
+    #editor-container {
+      flex: 1;
+    }
+
+    .output-panel {
+      width: 400px;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .output-tabs {
+      display: flex;
+      border-bottom: 1px solid #313244;
+      background: #181825;
+    }
+
+    .tab {
+      padding: 6px 16px;
+      font-size: 12px;
+      cursor: pointer;
+      color: #6c7086;
+      border-bottom: 2px solid transparent;
+    }
+    .tab.active {
+      color: #cdd6f4;
+      border-bottom-color: #cba6f7;
+    }
+
+    #output-stdout, #output-diagnostics {
+      flex: 1;
+      padding: 12px;
+      font-family: "Cascadia Code", "JetBrains Mono", monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      background: #1e1e2e;
+    }
+
+    #output-diagnostics { display: none; }
+
+    .diagnostic {
+      margin-bottom: 8px;
+      padding: 8px;
+      border-radius: 4px;
+      border-left: 3px solid;
+    }
+    .diagnostic.error { background: rgba(243,139,168,0.1); border-color: #f38ba8; }
+    .diagnostic.warning { background: rgba(249,226,175,0.1); border-color: #f9e2af; }
+    .diagnostic.note { background: rgba(137,220,235,0.1); border-color: #89dceb; }
+
+    .diagnostic .loc { font-size: 11px; color: #6c7086; margin-bottom: 2px; }
+    .diagnostic .msg { color: #cdd6f4; }
+
+    #metrics {
+      padding: 8px 12px;
+      background: #181825;
+      border-top: 1px solid #313244;
+      font-size: 11px;
+      color: #6c7086;
+      display: flex;
+      gap: 16px;
+    }
+
+    .metric { display: flex; gap: 4px; }
+    .metric-label { color: #45475a; }
+    .metric-value { color: #cdd6f4; }
+
+    /* Boot overlay */
+    #boot-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(30,30,46,0.95);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+
+    .boot-box {
+      background: #181825;
+      border: 1px solid #313244;
+      border-radius: 12px;
+      padding: 32px 40px;
+      text-align: center;
+      min-width: 340px;
+    }
+
+    .boot-box h2 { color: #cba6f7; margin-bottom: 8px; }
+    .boot-box p  { color: #6c7086; font-size: 14px; margin-bottom: 20px; }
+
+    .progress-bar { width: 100%; height: 4px; background: #313244; border-radius: 2px; overflow: hidden; }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #cba6f7, #89dceb);
+      border-radius: 2px;
+      width: 0%;
+      transition: width 0.4s ease;
+    }
+
+    #boot-stage { margin-top: 10px; font-size: 12px; color: #45475a; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>JavaBox Playground</h1>
+  <div class="toolbar">
+    <span id="status" class="booting">Booting...</span>
+    <button id="btn-compile" disabled>Compile</button>
+    <button id="btn-run" disabled>Run</button>
+    <button id="btn-clear">Clear Output</button>
+  </div>
+</header>
+
+<div class="main">
+  <div class="editor-panel">
+    <div class="panel-header">
+      <span class="filename">Hello.java</span>
+      <span style="margin-left:auto;font-size:11px">Java 21</span>
+    </div>
+    <div id="editor-container"></div>
+  </div>
+
+  <div class="output-panel">
+    <div class="output-tabs">
+      <div class="tab active" id="tab-stdout" onclick="showTab('stdout')">Output</div>
+      <div class="tab" id="tab-diag" onclick="showTab('diagnostics')">Diagnostics</div>
+    </div>
+    <div id="output-stdout">Click "Compile" then "Run" to execute your Java code.</div>
+    <div id="output-diagnostics"></div>
+    <div id="metrics">
+      <div class="metric"><span class="metric-label">compile:</span><span class="metric-value" id="m-compile">—</span></div>
+      <div class="metric"><span class="metric-label">run:</span><span class="metric-value" id="m-run">—</span></div>
+      <div class="metric"><span class="metric-label">exit:</span><span class="metric-value" id="m-exit">—</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- Boot overlay -->
+<div id="boot-overlay">
+  <div class="boot-box">
+    <h2>Starting JavaBox</h2>
+    <p>Booting Oracle Linux 9 + JDK 21 in your browser.</p>
+    <div class="progress-bar">
+      <div class="progress-fill" id="progress-fill"></div>
+    </div>
+    <div id="boot-stage">Loading WASM module...</div>
+  </div>
+</div>
+
+<!-- Monaco Editor loader -->
+<script>var require = { paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.46.0/min/vs' } };</script>
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.46.0/min/vs/loader.js"></script>
+
+<!-- JavaBox SDK -->
+<script type="module">
+// In production, import from npm: import { JavaContainer } from '@javabox/sdk';
+// For development, import from the built SDK:
+// import { JavaContainer } from '../packages/sdk/dist/index.js';
+
+// ─── Configuration ────────────────────────────────────────────────────────────
+const WASM_BASE_URL = window.location.href.replace(/\/[^/]*$/, '/') + '../';
+// After running build/convert.sh, adjust to point to the htdocs output directory.
+
+// ─── Check Cross-Origin Isolation ────────────────────────────────────────────
+if (!crossOriginIsolated) {
+  document.getElementById('boot-overlay').innerHTML = `
+    <div class="boot-box">
+      <h2 style="color:#f38ba8">Missing Required Headers</h2>
+      <p>Add these headers to your server:<br><br>
+      <code>Cross-Origin-Opener-Policy: same-origin<br>
+      Cross-Origin-Embedder-Policy: require-corp</code></p>
+    </div>`;
+}
+
+// ─── Monaco Editor Setup ──────────────────────────────────────────────────────
+const DEFAULT_CODE = `public class Hello {
+    public static void main(String[] args) {
+        System.out.println("Hello from JavaBox!");
+        System.out.println("Java version: " + System.getProperty("java.version"));
+        System.out.println("OS: " + System.getProperty("os.name") + " " + System.getProperty("os.version"));
+
+        // Test basic computation
+        long start = System.currentTimeMillis();
+        long sum = 0;
+        for (int i = 0; i < 1_000_000; i++) {
+            sum += i;
+        }
+        long elapsed = System.currentTimeMillis() - start;
+        System.out.println("Sum 0..999999 = " + sum + " (computed in " + elapsed + "ms)");
+    }
+}
+`;
+
+require(['vs/editor/editor.main'], function() {
+  window.editor = monaco.editor.create(document.getElementById('editor-container'), {
+    value: DEFAULT_CODE,
+    language: 'java',
+    theme: 'vs-dark',
+    fontSize: 14,
+    lineHeight: 22,
+    fontFamily: '"Cascadia Code", "JetBrains Mono", monospace',
+    minimap: { enabled: false },
+    scrollBeyondLastLine: false,
+    automaticLayout: true,
+  });
+});
+
+// ─── UI Helpers ───────────────────────────────────────────────────────────────
+const statusEl = document.getElementById('status');
+const btnCompile = document.getElementById('btn-compile');
+const btnRun = document.getElementById('btn-run');
+const outputStdout = document.getElementById('output-stdout');
+const outputDiag = document.getElementById('output-diagnostics');
+const bootOverlay = document.getElementById('boot-overlay');
+const progressFill = document.getElementById('progress-fill');
+const bootStage = document.getElementById('boot-stage');
+
+window.showTab = function(tab) {
+  document.getElementById('tab-stdout').classList.toggle('active', tab === 'stdout');
+  document.getElementById('tab-diag').classList.toggle('active', tab === 'diagnostics');
+  outputStdout.style.display = tab === 'stdout' ? 'block' : 'none';
+  outputDiag.style.display = tab === 'diagnostics' ? 'block' : 'none';
+};
+
+function appendOutput(text, color) {
+  const span = document.createElement('span');
+  if (color) span.style.color = color;
+  span.textContent = text;
+  outputStdout.appendChild(span);
+  outputStdout.scrollTop = outputStdout.scrollHeight;
+}
+
+function setMetric(id, value) {
+  document.getElementById('m-' + id).textContent = value;
+}
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = cls;
+}
+
+function setProgress(pct, stage) {
+  progressFill.style.width = pct + '%';
+  bootStage.textContent = stage;
+}
+
+// ─── Container Boot ───────────────────────────────────────────────────────────
+let container = null;
+
+async function boot() {
+  try {
+    setProgress(10, 'Loading JavaBox SDK...');
+
+    // TODO: Replace with actual SDK import once packages/sdk is built
+    // For now, this shows the intended API surface.
+    // const { JavaContainer } = await import('../packages/sdk/dist/index.js');
+
+    setProgress(30, 'Loading WASM module (~100–500MB)...');
+
+    // Simulating SDK boot for now — replace with real boot when SDK is ready:
+    // container = await JavaContainer.boot({
+    //   wasmBaseUrl: WASM_BASE_URL,
+    //   networking: { mode: 'browser' },
+    //   onProgress: (stage, pct) => setProgress(30 + (pct || 0) * 0.6, stage),
+    //   onReady: () => {
+    //     setProgress(100, 'Ready!');
+    //     setTimeout(() => { bootOverlay.style.display = 'none'; }, 500);
+    //     setStatus('Ready', 'ready');
+    //     btnCompile.disabled = false;
+    //     btnRun.disabled = false;
+    //   },
+    // });
+
+    // Placeholder until SDK is implemented:
+    await new Promise(r => setTimeout(r, 1500));
+    setProgress(100, 'SDK not yet implemented — see packages/sdk/');
+    bootOverlay.innerHTML = `
+      <div class="boot-box">
+        <h2 style="color:#f9e2af">SDK Not Yet Built</h2>
+        <p>The TypeScript SDK (packages/sdk/) is scaffolded but not implemented.<br>
+        Run the Phase 1 implementation to enable compile/run functionality.</p>
+        <p style="margin-top:12px;font-size:12px;color:#45475a">
+          Build the container first: <code>docker build -t javabox:latest ./container/</code><br>
+          Then convert: <code>./build/convert.sh</code>
+        </p>
+      </div>`;
+
+  } catch (err) {
+    setStatus('Boot Failed', 'error');
+    bootStage.textContent = err.message;
+    console.error(err);
+  }
+}
+
+// ─── Compile Button ───────────────────────────────────────────────────────────
+btnCompile.addEventListener('click', async () => {
+  if (!container) return;
+  const code = window.editor?.getValue() ?? '';
+  outputStdout.textContent = '';
+  outputDiag.innerHTML = '';
+  setStatus('Compiling...', 'running');
+  btnCompile.disabled = true;
+  btnRun.disabled = true;
+
+  try {
+    const result = await container.compile([
+      { path: 'Hello.java', content: code }
+    ]);
+
+    setMetric('compile', result.durationMs + 'ms');
+    setMetric('exit', result.exitCode);
+
+    if (result.exitCode === 0) {
+      appendOutput('Compilation successful\n', '#a6e3a1');
+      setStatus('Compiled', 'ready');
+      btnRun.disabled = false;
+    } else {
+      appendOutput(result.stdout + result.stderr, '#f38ba8');
+      setStatus('Compile Error', 'error');
+    }
+
+    // Show diagnostics
+    if (result.diagnostics.length > 0) {
+      result.diagnostics.forEach(d => {
+        const div = document.createElement('div');
+        div.className = `diagnostic ${d.kind}`;
+        div.innerHTML = `<div class="loc">${d.file}:${d.line}</div>
+                         <div class="msg">${d.message}</div>`;
+        outputDiag.appendChild(div);
+      });
+    }
+
+  } catch (err) {
+    appendOutput('Error: ' + err.message + '\n', '#f38ba8');
+    setStatus('Error', 'error');
+  } finally {
+    btnCompile.disabled = false;
+  }
+});
+
+// ─── Run Button ───────────────────────────────────────────────────────────────
+btnRun.addEventListener('click', async () => {
+  if (!container) return;
+  outputStdout.textContent = '';
+  setStatus('Running...', 'running');
+  btnRun.disabled = true;
+
+  try {
+    const result = await container.run('Hello');
+
+    setMetric('run', result.durationMs + 'ms');
+    setMetric('exit', result.exitCode);
+
+    appendOutput(result.stdout);
+    if (result.stderr) appendOutput(result.stderr, '#f9e2af');
+
+    setStatus(result.exitCode === 0 ? 'Done' : 'Exit ' + result.exitCode,
+              result.exitCode === 0 ? 'ready' : 'error');
+
+  } catch (err) {
+    appendOutput('Error: ' + err.message + '\n', '#f38ba8');
+    setStatus('Error', 'error');
+  } finally {
+    btnRun.disabled = false;
+  }
+});
+
+// ─── Clear Button ─────────────────────────────────────────────────────────────
+document.getElementById('btn-clear').addEventListener('click', () => {
+  outputStdout.textContent = '';
+  outputDiag.innerHTML = '';
+  setMetric('compile', '—');
+  setMetric('run', '—');
+  setMetric('exit', '—');
+});
+
+// Start boot
+boot();
+</script>
+
+</body>
+</html>

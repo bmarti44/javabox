@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>JavaBox — Hello World Example</title>
+  <style>
+    body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 24px; max-width: 800px; margin: 0 auto; }
+    h1 { color: #cba6f7; }
+    pre { background: #181825; padding: 16px; border-radius: 8px; white-space: pre-wrap; line-height: 1.5; }
+    .success { color: #a6e3a1; }
+    .error { color: #f38ba8; }
+    .info { color: #89dceb; }
+    .timing { color: #6c7086; font-size: 12px; }
+  </style>
+</head>
+<body>
+<h1>JavaBox — Hello World</h1>
+<pre id="output">Initializing...</pre>
+
+<script type="module">
+  // In production: import { JavaContainer } from '@javabox/sdk';
+  // For local dev after building the SDK: import { JavaContainer } from '../../packages/sdk/dist/index.js';
+
+  const output = document.getElementById('output');
+  const log = (msg, cls = '') => {
+    const span = document.createElement('span');
+    if (cls) span.className = cls;
+    span.textContent = msg + '\n';
+    output.appendChild(span);
+  };
+
+  // Clear initial text
+  output.textContent = '';
+
+  async function main() {
+    // ── Check prerequisites ──────────────────────────────────────────────
+    if (!crossOriginIsolated) {
+      log('ERROR: Cross-Origin Isolation not enabled.', 'error');
+      log('Add these headers to your server:', 'error');
+      log('  Cross-Origin-Opener-Policy: same-origin', 'info');
+      log('  Cross-Origin-Embedder-Policy: require-corp', 'info');
+      return;
+    }
+
+    log('Booting JavaBox container...', 'info');
+    log('(First boot takes 15-60 seconds — subsequent boots from cache are faster)', 'timing');
+
+    try {
+      // ── Boot the container ────────────────────────────────────────────
+      // TODO: Replace with actual SDK import once packages/sdk is built.
+      // const { JavaContainer } = await import('../../packages/sdk/dist/index.js');
+      // const container = await JavaContainer.boot({
+      //   wasmBaseUrl: '../../wasm/',   // Path to c2w --to-js output
+      //   networking: { mode: 'browser' },
+      //   onProgress: (stage, pct) => log(`[${pct ?? '?'}%] ${stage}`, 'info'),
+      //   onReady: () => log('Container ready!', 'success'),
+      // });
+
+      // ── Placeholder until SDK is complete ─────────────────────────────
+      log('');
+      log('SDK not yet implemented. This is the Hello World example structure.', 'info');
+      log('');
+      log('Steps to get this working:', 'info');
+      log('  1. ~/.rd/bin/docker build --platform linux/amd64 -t javabox:latest ./container/', 'info');
+      log('  2. ./build/convert.sh', 'info');
+      log('  3. npm install && npm run build (in packages/sdk/)', 'info');
+      log('  4. python3 build/serve.py ~/javabox-wasm', 'info');
+      log('');
+      log('Expected output when working:', 'success');
+      log('  Hello from JavaBox!', 'success');
+      log('  Java version: 21.0.x', 'success');
+      log('  OS: Linux 6.x.x', 'success');
+      return;
+
+      // ── Write and compile Hello.java ──────────────────────────────────
+      log('Writing Hello.java...');
+      const helloSource = `
+public class Hello {
+    public static void main(String[] args) {
+        System.out.println("Hello from JavaBox!");
+        System.out.println("Java version: " + System.getProperty("java.version"));
+        System.out.println("OS: " + System.getProperty("os.name") + " " + System.getProperty("os.arch"));
+    }
+}`.trim();
+
+      // Files can also be pre-written via container.fs.writeFile()
+      log('Compiling...');
+      const compileResult = await container.compile([
+        { path: 'Hello.java', content: helloSource }
+      ]);
+
+      log(`Compile: exit=${compileResult.exitCode}, time=${compileResult.durationMs}ms`, 'timing');
+
+      if (compileResult.exitCode !== 0) {
+        log('Compilation failed:', 'error');
+        log(compileResult.stdout + compileResult.stderr, 'error');
+        for (const diag of compileResult.diagnostics) {
+          log(`  ${diag.kind.toUpperCase()} at ${diag.file}:${diag.line}: ${diag.message}`, 'error');
+        }
+        return;
+      }
+
+      if (compileResult.diagnostics.length > 0) {
+        log('Warnings:');
+        for (const diag of compileResult.diagnostics) {
+          log(`  ${diag.kind} at ${diag.file}:${diag.line}: ${diag.message}`);
+        }
+      }
+
+      // ── Run the compiled class ────────────────────────────────────────
+      log('Running...');
+      const runResult = await container.run('Hello');
+
+      log(`Run: exit=${runResult.exitCode}, time=${runResult.durationMs}ms`, 'timing');
+      log('');
+      log('Output:', 'success');
+      log(runResult.stdout, 'success');
+
+      if (runResult.stderr) {
+        log('Stderr:', 'error');
+        log(runResult.stderr, 'error');
+      }
+
+    } catch (err) {
+      log('Error: ' + err.message, 'error');
+      console.error(err);
+    }
+  }
+
+  main();
+</script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+# jlink module list for JavaBox minimal JDK
+#
+# Minimal set for jshell REPL + compilation + HTTP + TLS
+# Used in: container/Dockerfile jlink --add-modules
+#
+# To add modules, update the Dockerfile jlink command and rebuild.
+# Check what a class needs: jdeps --print-module-deps YourApp.class
+
+# ---- Core (included transitively by jdk.jshell) ----
+java.base             # Core Java (Object, String, Collections, IO, NIO, etc.)
+jdk.compiler          # javac compiler (transitive dep of jdk.jshell)
+java.compiler         # javax.tools API (transitive dep of jdk.compiler)
+java.logging          # java.util.logging (transitive dep)
+
+# ---- JShell REPL ----
+jdk.jshell            # jshell interactive REPL
+
+# ---- Common runtime ----
+java.instrument       # java.lang.instrument (needed by some agents)
+jdk.unsupported       # sun.misc.Unsafe and other non-standard APIs
+
+# ---- Networking ----
+java.net.http         # Java 11+ HttpClient
+jdk.net               # Unix domain sockets, ExtendedSocketOptions
+jdk.crypto.ec         # TLS/HTTPS (ECDSA, ECDH)
+
+# ---- Data ----
+java.sql              # JDBC API (java.sql.*)
+
+# ---- Servers ----
+jdk.httpserver        # com.sun.net.httpserver (embedded HTTP server)
+
+# ---- NOT included (saves ~46 modules / ~230MB) ----
+# java.xml            # javax.xml, DOM, SAX
+# jdk.zipfs           # ZIP filesystem
+# java.security.jgss  # Kerberos/GSSAPI
+# java.security.sasl  # SASL authentication
+# java.management     # JMX, MBeans
+# java.naming         # JNDI
+# java.scripting      # javax.script
+# java.rmi            # Remote Method Invocation
+# jdk.jdwp.agent      # Debug Wire Protocol
+# jdk.management      # com.sun.management
+# java.desktop        # AWT/Swing (huge)
+# jdk.javadoc         # javadoc tool

@@ -1,0 +1,116 @@
+# JavaBox — Agent Guidance
+
+This file describes the codebase structure, key constraints, and conventions for AI agents working in this repository.
+
+## What This Project Is
+
+JavaBox converts an Oracle Linux 9 + JDK 21 container into browser-runnable WebAssembly using [container2wasm](https://github.com/container2wasm/container2wasm). It exposes a TypeScript SDK so JavaScript applications can compile and run Java code in-browser with no server-side Java.
+
+## Repository Layout
+
+```
+container/          Oracle Linux 9-slim + Temurin JDK 21 (Dockerfile)
+build/              Shell scripts: convert.sh, optimize.sh, cdn-upload.sh, serve-config.json
+web/                Static demo: index.html (xterm terminal), playground.html (Monaco editor)
+packages/
+  sdk/              TypeScript SDK (@javabox/sdk) — compile/run/fs API
+  relay/            c2w-net relay server Dockerfile (for full TCP/UDP networking)
+examples/           Minimal usage examples (hello-world, http-client)
+scripts/            ci.sh, benchmark.sh
+docs/               (reserved for generated docs)
+PLAN.md             Full project specification and phase breakdown
+```
+
+## Container Build
+
+- Base image: `oraclelinux:9-slim` from Docker Hub (no auth required)
+- JDK: Eclipse Temurin JDK 21 installed via tarball, then shrunk with `jlink`
+- Must always build with `--platform linux/amd64`
+- Container runtime: **Rancher Desktop** (`~/.rd/bin/docker`) — NOT Docker Desktop, NOT plain `docker`
+  - `nerdctl` does not work here because Rancher Desktop is running the `dockerd` (moby) engine, not containerd
+  - Use `~/.rd/bin/docker` or add `~/.rd/bin` to `$PATH`
+
+Build command:
+```sh
+~/.rd/bin/docker build --platform linux/amd64 -t javabox:latest ./container/
+```
+
+Smoke test:
+```sh
+~/.rd/bin/docker run --rm --platform linux/amd64 javabox:latest bash -c 'java -version && javac -version'
+```
+
+## WASM Conversion (c2w) — Two Modes
+
+`build/convert.sh` auto-detects the platform, or accepts `--mode arm-mac|linux`.
+
+The output (`out.wasm`, `out.js`, `out.data`) is a **static artifact** — only re-run conversion when `container/Dockerfile` changes.
+
+### `--mode arm-mac` (Apple Silicon macOS)
+
+Uses a Colima x86_64 VM (`brew install colima`). Slow on first run (~20–40 min); VM is reused on subsequent runs.
+
+```sh
+./build/convert.sh --mode arm-mac ~/javabox-wasm
+```
+
+**Why Colima, not QEMU user-mode:**
+- c2w's BuildKit compiles `runc` using Go 1.24 for amd64
+- Go 1.24's GC (`gcBgMarkWorker`) crashes under QEMU **user-mode** emulation on ARM
+- `tonistiigi/binfmt --install all` does NOT fix this
+- Colima with `--arch x86_64` runs a full x86_64 VM (QEMU full system emulation) — Go runs natively inside it, no crash
+
+Colima VM profile name: `javabox-x86` (created automatically by the script).
+
+### `--mode linux` (Linux x86_64 — fast, for CI pipelines)
+
+Uses the native c2w binary. Fast (~5–10 min). Use in CI pipelines and on Linux build machines.
+
+```sh
+# Install c2w once
+wget -qO- https://github.com/container2wasm/container2wasm/releases/download/v0.8.3/container2wasm-v0.8.3-linux-amd64.tar.gz \
+  | tar xz && sudo mv c2w c2w-net /usr/local/bin/
+
+./build/convert.sh --mode linux /tmp/javabox-wasm
+```
+
+## TypeScript SDK (`packages/sdk/`)
+
+- Entry: `packages/sdk/src/index.ts`
+- Types: `packages/sdk/src/types.ts` — all public interfaces
+- Key class: `packages/sdk/src/container.ts` — `JavaContainer.boot()`, `compile()`, `run()`, `exec()`
+- Build: `cd packages/sdk && npm run build` (uses tsc)
+- Type-check only: `cd packages/sdk && npx tsc --noEmit`
+
+**Open questions that must be resolved empirically against a live WASM build:**
+- `EMSCRIPTEN_WORKSPACE_PATH` in `container.ts` — the exact path for the virtio-9p shared mount
+- Boot sentinel detection — confirm `/etc/profile.d/javabox-ready.sh` runs on QEMU Wasm startup
+- PTY strategy — `process.ts` has two stub strategies (A: script+sentinel, B: xterm-pty)
+
+## Serving the WASM Output
+
+The WASM output requires these HTTP headers (SharedArrayBuffer dependency):
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+For local dev: `npx serve <output-dir> --config build/serve-config.json`
+
+## Key Design Decisions
+
+| Decision | Choice | Reason |
+|----------|--------|--------|
+| Base OS | `oraclelinux:9-slim` | Matches project spec; small; no auth needed |
+| JDK | Eclipse Temurin 21 via tarball | `java-21-openjdk-devel` pulls 200+ GUI deps on OL9 |
+| jlink compression | `--compress=zip-6` | `--compress=2` deprecated in JDK 21; `--strip-debug` requires objcopy |
+| c2w mode | `--to-js` (QEMU Wasm/TCG) | Full x86_64 Linux emulation in browser |
+| Networking default | `c2w-net-proxy.wasm` | HTTP/S only via browser Fetch, no relay needed |
+| Container runtime | Rancher Desktop `dockerd` | User preference; nerdctl not available (containerd not running) |
+
+## What Not To Do
+
+- Do not run `docker build` without `--platform linux/amd64` — results in aarch64 packages on Apple Silicon
+- Do not use `--strip-debug` in jlink — requires `objcopy` (binutils) which is not installed
+- Do not attempt c2w conversion on macOS/Apple Silicon — it will fail at the runc build step
+- Do not change the `CMD` in the Dockerfile away from `["/bin/bash", "--login"]` — the `--login` flag is required for `/etc/profile.d/javabox-ready.sh` to execute at container start

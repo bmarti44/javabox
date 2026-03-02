@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>JavaBox — HTTP Client Example</title>
+  <style>
+    body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 24px; max-width: 800px; margin: 0 auto; }
+    h1 { color: #cba6f7; }
+    pre { background: #181825; padding: 16px; border-radius: 8px; white-space: pre-wrap; line-height: 1.5; }
+    .success { color: #a6e3a1; }
+    .error { color: #f38ba8; }
+    .info { color: #89dceb; }
+    .warning { color: #f9e2af; }
+  </style>
+</head>
+<body>
+<h1>JavaBox — HTTP Client Example</h1>
+<p style="color:#6c7086">Demonstrates Java's HttpClient making an HTTP request from inside the browser WASM container.</p>
+<pre id="output">Initializing...</pre>
+
+<script type="module">
+  const output = document.getElementById('output');
+  output.textContent = '';
+  const log = (msg, cls = '') => {
+    const span = document.createElement('span');
+    if (cls) span.className = cls;
+    span.textContent = msg + '\n';
+    output.appendChild(span);
+  };
+
+  const HTTP_JAVA_SOURCE = `
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+public class HttpClientDemo {
+    public static void main(String[] args) throws Exception {
+        System.out.println("Creating HTTP client...");
+
+        HttpClient client = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
+            .build();
+
+        // Note: In browser-only mode, requests go through c2w-net-proxy
+        // which translates them to browser fetch() calls.
+        // CORS restrictions apply.
+        String url = args.length > 0 ? args[0] : "https://httpbin.org/json";
+
+        System.out.println("Requesting: " + url);
+
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(url))
+            .GET()
+            .build();
+
+        HttpResponse<String> response = client.send(
+            request,
+            HttpResponse.BodyHandlers.ofString()
+        );
+
+        System.out.println("Status: " + response.statusCode());
+        System.out.println("Content-Type: " + response.headers().firstValue("content-type").orElse("unknown"));
+        System.out.println("Body:");
+        System.out.println(response.body());
+    }
+}
+`.trim();
+
+  async function main() {
+    if (!crossOriginIsolated) {
+      log('ERROR: Cross-Origin Isolation required', 'error');
+      return;
+    }
+
+    log('This example requires the JavaBox SDK to be built and a WASM image to be generated.', 'warning');
+    log('');
+    log('Java source that will be executed:', 'info');
+    log('─'.repeat(60));
+    log(HTTP_JAVA_SOURCE);
+    log('─'.repeat(60));
+    log('');
+    log('Networking note:', 'info');
+    log('  Browser mode: HTTP/S only (CORS-restricted, via c2w-net-proxy)', 'info');
+    log('  Delegate mode: Full TCP/UDP (requires relay server)', 'info');
+    log('');
+    log('SDK usage (once built):', 'info');
+    log('  const container = await JavaContainer.boot({');
+    log('    wasmBaseUrl: "/wasm/",');
+    log('    networking: { mode: "browser" }  // or delegate');
+    log('  });');
+    log('  await container.compile([{ path: "HttpClientDemo.java", content: HTTP_JAVA_SOURCE }]);');
+    log('  const result = await container.run("HttpClientDemo");');
+    log('  console.log(result.stdout);');
+  }
+
+  main();
+</script>
+</body>
+</html>

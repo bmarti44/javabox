@@ -1,0 +1,45 @@
+version: '3.8'
+
+# JavaBox c2w-net relay server
+# Provides full TCP/UDP networking for Java code running in the browser.
+#
+# Usage:
+#   nerdctl compose up -d          # Start relay
+#   nerdctl compose logs -f        # Watch logs
+#   nerdctl compose down           # Stop relay
+#
+# Then configure the SDK:
+#   JavaContainer.boot({
+#     networking: { mode: 'delegate', relayUrl: 'ws://localhost:8888' }
+#   })
+
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        C2W_VERSION: "v0.8.3"
+    image: javabox-relay:v0.8.3
+    container_name: javabox-relay
+    ports:
+      - "8888:8888"
+    restart: unless-stopped
+    # Resource limits — adjust based on expected load
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
+    # Health check — verifies the relay is accepting connections
+    healthcheck:
+      test: ["CMD", "sh", "-c", "echo '' | nc -w1 localhost 8888 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
