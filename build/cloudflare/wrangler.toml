@@ -1,0 +1,7 @@
+name = "javabox-demo"
+main = "worker.js"
+compatibility_date = "2024-12-01"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "javabox-assets"

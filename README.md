@@ -2,33 +2,43 @@
 
 Run Java in the browser. No server-side JVM required.
 
-JavaBox packages an Oracle Linux 9 + JDK 21 container into browser-runnable WebAssembly using [container2wasm](https://github.com/container2wasm/container2wasm). A TypeScript SDK exposes a `compile()` / `run()` API that lets your JavaScript application write, compile, and execute Java code entirely inside the user's browser tab.
+**[Live Demo](https://javabox-demo.brian-fec.workers.dev/)**
+
+![JavaBox Demo](docs/demo-screenshot.png)
+
+JavaBox packages an Alpine Linux 3.21 + OpenJDK 21 container into browser-runnable WebAssembly using [container2wasm](https://github.com/container2wasm/container2wasm). Write, compile, and execute Java code entirely inside the browser tab — no backend needed.
 
 ## How It Works
 
 ```
-Your JS app
-  └── @javabox/sdk
-        └── container2wasm runtime (Emscripten + QEMU Wasm)
-              └── Linux kernel (emulated x86_64)
-                    └── Oracle Linux 9-slim
-                          └── JDK 21 (jlinked minimal)
+Browser tab
+  └── Cloudflare Worker (COOP/COEP headers)
+        └── Emscripten + QEMU Wasm (x86_64 TCG emulation)
+              └── Linux kernel
+                    └── Alpine Linux 3.21
+                          └── OpenJDK 21 (jlinked, 23 modules)
+                                └── CompileServer (persistent JVM daemon)
 ```
 
-Files are shared between JavaScript and the emulated container via a virtio-9p mount. The SDK writes `.java` files into that mount, runs `javac` and `java` inside the container, and streams stdout/stderr back to your callbacks.
+A persistent **CompileServer** daemon loads the JVM once during container2wasm snapshot capture. After snapshot restore in the browser, the JVM is already warm — compilation and execution happen in-process via `javax.tools.JavaCompiler` and `URLClassLoader`, avoiding JVM startup overhead entirely.
+
+**Performance:** ~20s boot, ~35s compile+run HelloWorld. Total ~55s from page load to output.
 
 ## Repository Structure
 
 ```
-container/          Dockerfile — Oracle Linux 9 + Temurin JDK 21
-build/              Build scripts (convert, optimize, serve)
+container/          Dockerfile — Alpine Linux 3.21 + OpenJDK 21 + CompileServer
+  CompileServer.java  Persistent compilation daemon (survives snapshot restore)
+build/              Build scripts (convert, deploy, optimize, serve)
+  cloudflare/       Cloudflare Worker + R2 deployment
+  deploy-cloudflare.sh  One-command deploy to Cloudflare
 web/                Demo pages (terminal + Monaco editor playground)
 packages/
   sdk/              TypeScript SDK (@javabox/sdk)
-  relay/            c2w-net relay server (optional — for full TCP/UDP networking)
+  relay/            c2w-net relay server (optional networking)
 examples/           Minimal usage examples
 scripts/            CI and benchmark helpers
-PLAN.md             Full project specification
+tests/              Playwright e2e tests
 ```
 
 ## Prerequisites
@@ -39,7 +49,6 @@ PLAN.md             Full project specification
 | [Colima](https://github.com/abiosoft/colima) | macOS arm64 | WASM conversion (x86_64 VM) | `brew install colima` |
 | container2wasm v0.8.3 | Linux x86_64 | WASM conversion (fast/CI) | See Step 2 |
 | Node.js 20+ | All | SDK build, local dev server | `brew install node` |
-| brotli | All | Optional compression | `brew install brotli` |
 
 ## Step 1 — Build the Container Image
 
@@ -52,172 +61,76 @@ PLAN.md             Full project specification
   ./container/
 ```
 
-Smoke test (verify javac and java work):
+Smoke test:
 
 ```sh
 ~/.rd/bin/docker run --rm --platform linux/amd64 javabox:latest bash -c '
-  java -version
-  javac -version
-  echo "public class Test { public static void main(String[] a) { System.out.println(\"OK\"); } }" > /tmp/Test.java
-  javac /tmp/Test.java -d /tmp
-  java -cp /tmp Test
+  java -version && javac -version && java --list-modules | wc -l
 '
 ```
 
 ## Step 2 — Convert to WASM
 
-The conversion step is the only platform-sensitive operation. It produces static artifacts
-(`out.wasm`, `out.js`, `out.data`) that are reused for all subsequent development — you only
-re-run this when the `container/Dockerfile` changes.
-
-`build/convert.sh` auto-detects your platform, or you can pass `--mode` explicitly.
-
-### On Apple Silicon macOS (`--mode arm-mac`)
-
-Uses a [Colima](https://github.com/abiosoft/colima) x86_64 VM for full system emulation.
-Slow on first run (~20–40 min); the VM is reused on subsequent runs so re-conversion is faster.
-
-> **Why:** container2wasm internally compiles `runc` with Go 1.24. Go 1.24's GC crashes under
-> QEMU user-mode emulation on ARM. Colima runs a full x86_64 VM (not user-mode emulation),
-> so Go executes natively inside it.
+The conversion step produces static artifacts that are reused for all subsequent development — you only re-run this when the `container/Dockerfile` changes.
 
 ```sh
-# Install colima + its x86_64 guest agent + qemu (one-time setup)
-brew install colima lima-additional-guestagents qemu
-
-# Convert (auto-detects arm-mac mode; starts x86_64 VM on first run)
+# Apple Silicon macOS (uses Colima x86_64 VM)
 ./build/convert.sh ~/javabox-wasm
 
-# Or explicitly:
-./build/convert.sh --mode arm-mac ~/javabox-wasm
-```
-
-The Colima VM (profile `javabox-x86`) stays running after the first conversion and is
-reused automatically. Stop it when not needed:
-
-```sh
-colima stop --profile javabox-x86
-```
-
-### On Linux x86_64 (`--mode linux`)
-
-Uses the native c2w binary directly. Fast (~5–10 min). Use this in CI pipelines and
-on Linux build machines.
-
-```sh
-# Install c2w v0.8.3 once
-wget -qO- https://github.com/container2wasm/container2wasm/releases/download/v0.8.3/container2wasm-v0.8.3-linux-amd64.tar.gz \
-  | tar xz && sudo mv c2w c2w-net /usr/local/bin/
-
-# Convert (auto-detects linux mode)
-./build/convert.sh /tmp/javabox-wasm
-
-# Or explicitly:
+# Linux x86_64 (native c2w, fast)
 ./build/convert.sh --mode linux /tmp/javabox-wasm
 ```
 
-### Output files
+See `build/convert.sh --help` for details.
 
-Both modes produce the same artifacts:
+## Step 3 — Serve Locally
 
-| File | Description |
-|------|-------------|
-| `out.js` | Emscripten JS loader |
-| `out.wasm` | QEMU Wasm binary |
-| `out.data` | Packed container filesystem |
-| `c2w-net-proxy.wasm` | In-browser HTTP proxy (browser networking mode) |
-
-## Step 3 — Serve the Demo (Optional Compression)
-
-The WASM files require two HTTP headers to enable `SharedArrayBuffer` (used by the QEMU JIT):
-
-```
-Cross-Origin-Opener-Policy: same-origin
-Cross-Origin-Embedder-Policy: require-corp
-```
-
-**Quick local serve** (sets headers automatically via `build/serve-config.json`):
+The WASM files require `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers for `SharedArrayBuffer`.
 
 ```sh
-npx serve /tmp/javabox-out/htdocs --config build/serve-config.json
+python3 build/serve.py ~/javabox-wasm 3000
 # open http://localhost:3000
 ```
 
-**Optional — Brotli compression** before serving/deploying:
+## Step 4 — Deploy to Cloudflare
+
+JavaBox is deployed via a Cloudflare Worker + R2 bucket. The Worker serves all files from R2 with the required COOP/COEP headers.
 
 ```sh
-# Requires: brew install brotli
-./build/optimize.sh /tmp/javabox-out/htdocs
+# One-time setup
+npm install --userconfig /dev/null wrangler
+npx --userconfig /dev/null wrangler login
+
+# Deploy
+./build/deploy-cloudflare.sh ~/javabox-wasm
 ```
 
-This produces `.br` pre-compressed files and a `manifest.json` with SHA-256 checksums.
+## Architecture
 
-## Step 4 — Use the SDK
+### CompileServer
 
-```sh
-cd packages/sdk
-npm install
-npm run build        # compiles TypeScript
-npx tsc --noEmit     # type-check only
-```
+The key innovation is a persistent JVM daemon (`container/CompileServer.java`) that:
 
-Basic usage in your web app:
+1. Loads during container2wasm snapshot capture (slow, but only happens once at build time)
+2. Survives QEMU snapshot restore in the browser (uses simple `BufferedReader`, no JLine)
+3. Compiles Java source in-process via `javax.tools.JavaCompiler`
+4. Runs compiled classes in-process via `URLClassLoader`
 
-```typescript
-import { JavaContainer } from '@javabox/sdk';
+Protocol:
+- **Boot detection:** Browser sends `JBOX_PING`, CompileServer responds `JBOX_PONG`
+- **Compile+Run:** `JBOX_COMPILE <ClassName>\n<source>\nJBOX_END\n` → output + `JBOX_EXIT:<code>`
 
-const container = await JavaContainer.boot({
-  wasmBaseUrl: '/htdocs/',
-  onStdout: (s) => console.log(s),
-  onStderr: (s) => console.error(s),
-});
+### Why not standalone javac/java?
 
-const result = await container.compile([{
-  path: 'Hello.java',
-  content: `
-    public class Hello {
-      public static void main(String[] args) {
-        System.out.println("Hello from WASM!");
-      }
-    }
-  `,
-}]);
-
-if (result.exitCode === 0) {
-  await container.run('Hello');
-}
-```
-
-See `examples/hello-world/index.html` for a complete working example.
-
-## Networking
-
-Three modes are available:
-
-| Mode | Description | Requires |
-|------|-------------|---------|
-| `none` (default) | No outbound network | Nothing |
-| `browser` | HTTP/S via browser Fetch API | `c2w-net-proxy.wasm` (bundled) |
-| `delegate` | Full TCP/UDP via WebSocket relay | `packages/relay/` deployed |
-
-## Project Status
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 0 | Container image (OL9 + JDK 21) | Done |
-| 0 | WASM conversion (c2w --to-js) | arm-mac: Colima x86 VM / linux: native c2w |
-| 1 | TypeScript SDK (compile/run/fs) | Scaffolded, pending live WASM |
-| 2 | Networking (browser + relay) | Scaffolded |
-| 3 | Optimization (jlink, Brotli) | Scripts ready |
-| 4 | Relay server | Dockerfile ready |
-| 5 | DX (examples, benchmarks) | Scaffolded |
+Under QEMU TCG WASM emulation (x86 → TCG → WASM → native), JVM startup takes 12+ minutes. CompileServer eliminates this by keeping the JVM loaded across compilations.
 
 ## Known Constraints
 
-- **Heap**: Container defaults to `-Xms64m -Xmx256m` via `JAVA_TOOL_OPTIONS` in the Dockerfile
-- **Boot time**: First load is slow (~30–120s depending on connection) due to WASM bundle size
-- **Browser support**: Requires SharedArrayBuffer → Chrome 92+, Firefox 79+, Safari 15.2+, Edge 92+
-- **HTTPS required in production**: SharedArrayBuffer is only available in secure contexts
+- **Guest RAM**: 128MB (`-m 128M`), heap limited to `-Xmx64m`
+- **Interpreter only**: `-Xint` (JIT disabled — not useful under TCG emulation)
+- **Boot time**: ~20s from page load to CompileServer ready
+- **Bundle size**: ~227MB data file (contains full container filesystem + QEMU snapshot)
+- **Browser support**: Requires SharedArrayBuffer — Chrome 92+, Firefox 79+, Safari 15.2+, Edge 92+
 
 ## Development
 
@@ -225,9 +138,6 @@ Three modes are available:
 # Type-check the SDK
 cd packages/sdk && npx tsc --noEmit
 
-# Run CI checks (type-check + container build + smoke test)
-./scripts/ci.sh
-
-# Benchmark (requires a running WASM instance)
-./scripts/benchmark.sh
+# Run e2e tests (requires local server on port 3999)
+npx playwright test tests/e2e-debug.spec.js
 ```
