@@ -239,6 +239,58 @@ EM_JS(void, setup_stdin_hook, (void* buf_ptr), {
 });
 
 /*
+ * Audio ring buffer for JVM → Browser PCM transfer.
+ *
+ * The WebAudioSoundDriver mixes 8 channels into 16-bit stereo PCM at 22050 Hz.
+ * Each audio frame is AUDIO_CHUNK_SIZE bytes (1050 stereo samples × 4 bytes).
+ * The browser polls the ring buffer and plays chunks via Web Audio API.
+ */
+#define AUDIO_CHUNK_SIZE 4200   /* MIXBUFFERSIZE: 1050 samples × 2 channels × 2 bytes */
+#define AUDIO_RING_CHUNKS 16    /* ~760ms buffer at 21 fps */
+static uint8_t audio_ring[AUDIO_CHUNK_SIZE * AUDIO_RING_CHUNKS];
+static volatile int32_t audio_write_idx = 0;
+
+/*
+ * JNI native method: WebAudioSoundDriver.nativeSubmitAudio(byte[] pcmData, int length)
+ * Called from the DoomLoop thread via the sound mixer. Copies one audio frame
+ * into the next slot in the ring buffer.
+ */
+JNIEXPORT void JNICALL
+Java_s_WebAudioSoundDriver_nativeSubmitAudio(JNIEnv *env, jclass cls,
+                                              jbyteArray pcmData, jint length) {
+    jbyte *src = (*env)->GetByteArrayElements(env, pcmData, NULL);
+    if (!src) return;
+
+    int idx = audio_write_idx % AUDIO_RING_CHUNKS;
+    int copy_len = length < AUDIO_CHUNK_SIZE ? length : AUDIO_CHUNK_SIZE;
+    memcpy(audio_ring + idx * AUDIO_CHUNK_SIZE, src, copy_len);
+    (*env)->ReleaseByteArrayElements(env, pcmData, src, JNI_ABORT);
+
+    __atomic_add_fetch(&audio_write_idx, 1, __ATOMIC_RELEASE);
+}
+
+/* Exported accessors for JavaScript to read the audio ring buffer */
+EMSCRIPTEN_KEEPALIVE
+int jvm_audio_ring_ptr(void) {
+    return (int)(intptr_t)audio_ring;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int jvm_audio_ring_chunks(void) {
+    return AUDIO_RING_CHUNKS;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int jvm_audio_chunk_size(void) {
+    return AUDIO_CHUNK_SIZE;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int jvm_audio_write_idx(void) {
+    return __atomic_load_n(&audio_write_idx, __ATOMIC_ACQUIRE);
+}
+
+/*
  * Doom Canvas Rendering — shared frame buffer for JVM → Browser pixel transfer.
  *
  * The JVM (running in a Web Worker via PROXY_TO_PTHREAD) writes pixel data here.
@@ -285,6 +337,54 @@ Java_CanvasRenderer_nativeRenderFrame(JNIEnv *env, jclass cls,
 
     /* Increment frame sequence to signal new frame */
     __atomic_add_fetch(&doom_frame_seq, 1, __ATOMIC_RELEASE);
+}
+
+/* ── Key event queue ─────────────────────────────────────────────────────────
+ * Browser posts key events directly via jvm_doom_key_event().
+ * Java polls them from CanvasRenderer.renderFrame() via nativePollKeyEvents().
+ * No Java thread needed — avoids Emscripten pthread creation issues.
+ */
+#define KEY_QUEUE_SIZE 64
+typedef struct { int32_t type; int32_t scancode; } key_event_t;
+static key_event_t key_queue[KEY_QUEUE_SIZE];
+static volatile int32_t key_write_idx = 0;
+static volatile int32_t key_read_idx = 0;
+
+EMSCRIPTEN_KEEPALIVE
+void jvm_doom_key_event(int type, int scancode) {
+    int idx = __atomic_load_n(&key_write_idx, __ATOMIC_RELAXED) % KEY_QUEUE_SIZE;
+    key_queue[idx].type = type;
+    key_queue[idx].scancode = scancode;
+    __atomic_add_fetch(&key_write_idx, 1, __ATOMIC_RELEASE);
+}
+
+/*
+ * JNI native method: CanvasRenderer.nativePollKeyEvents() -> int[]
+ * Returns pairs [type0, sc0, type1, sc1, ...] or null if no events.
+ * type: 1=keydown, 0=keyup
+ */
+JNIEXPORT jintArray JNICALL
+Java_CanvasRenderer_nativePollKeyEvents(JNIEnv *env, jclass cls) {
+    int read = __atomic_load_n(&key_read_idx, __ATOMIC_RELAXED);
+    int write = __atomic_load_n(&key_write_idx, __ATOMIC_ACQUIRE);
+    int count = write - read;
+    if (count <= 0) return NULL;
+    if (count > KEY_QUEUE_SIZE) {
+        read = write - KEY_QUEUE_SIZE;
+        count = KEY_QUEUE_SIZE;
+    }
+
+    jintArray result = (*env)->NewIntArray(env, count * 2);
+    if (!result) return NULL;
+    jint buf[KEY_QUEUE_SIZE * 2];
+    for (int i = 0; i < count; i++) {
+        int idx = (read + i) % KEY_QUEUE_SIZE;
+        buf[i*2] = key_queue[idx].type;
+        buf[i*2+1] = key_queue[idx].scancode;
+    }
+    (*env)->SetIntArrayRegion(env, result, 0, count * 2, buf);
+    __atomic_store_n(&key_read_idx, read + count, __ATOMIC_RELEASE);
+    return result;
 }
 
 /*
@@ -388,11 +488,26 @@ int main(int argc, char** argv) {
         if (canvasRendererClass != NULL) {
             JNINativeMethod methods[] = {
                 {"nativeRenderFrame", "([III)V",
-                 (void*)Java_CanvasRenderer_nativeRenderFrame}
+                 (void*)Java_CanvasRenderer_nativeRenderFrame},
+                {"nativePollKeyEvents", "()[I",
+                 (void*)Java_CanvasRenderer_nativePollKeyEvents}
             };
-            (*env)->RegisterNatives(env, canvasRendererClass, methods, 1);
+            (*env)->RegisterNatives(env, canvasRendererClass, methods, 2);
         }
         /* Clear any ClassNotFoundException — CanvasRenderer may not be loaded yet */
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+        }
+
+        /* Register WebAudioSoundDriver native methods */
+        jclass webAudioClass = (*env)->FindClass(env, "s/WebAudioSoundDriver");
+        if (webAudioClass != NULL) {
+            JNINativeMethod audioMethods[] = {
+                {"nativeSubmitAudio", "([BI)V",
+                 (void*)Java_s_WebAudioSoundDriver_nativeSubmitAudio}
+            };
+            (*env)->RegisterNatives(env, webAudioClass, audioMethods, 1);
+        }
         if ((*env)->ExceptionCheck(env)) {
             (*env)->ExceptionClear(env);
         }

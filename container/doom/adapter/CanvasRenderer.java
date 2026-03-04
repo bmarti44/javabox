@@ -1,4 +1,7 @@
 import doom.DoomMain;
+import doom.event_t;
+import doom.evtype_t;
+import g.Signals.ScanCode;
 
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
@@ -11,6 +14,10 @@ import java.awt.image.DataBufferInt;
  * Emscripten's shared heap. The browser's requestAnimationFrame loop reads from
  * the shared heap and draws to an HTML Canvas using putImageData.
  *
+ * Also handles keyboard input by polling a C-side key event queue (populated
+ * by the browser via jvm_doom_key_event WASM export). This avoids creating
+ * a Java thread for input, which is unreliable under Emscripten pthreads.
+ *
  * The Doom framebuffer is 320x200 pixels (256KB as RGBA).
  */
 public class CanvasRenderer {
@@ -20,18 +27,24 @@ public class CanvasRenderer {
     private int frameCount = 0;
 
     private final DoomMain<?, ?> doom;
+    private final ScanCode[] scanCodes;
 
     public CanvasRenderer(DoomMain<?, ?> doom) {
         this.doom = doom;
+        this.scanCodes = ScanCode.values();
     }
 
     /**
      * Native method: copies pixel data to Emscripten shared heap for Canvas rendering.
-     * @param pixels ARGB pixel array from BufferedImage
-     * @param width  framebuffer width (typically 320)
-     * @param height framebuffer height (typically 200)
      */
     private static native void nativeRenderFrame(int[] pixels, int width, int height);
+
+    /**
+     * Native method: polls key events from C-side queue.
+     * Returns int[] of [type0, scancode0, type1, scancode1, ...] or null.
+     * type: 1=keydown, 0=keyup. scancode: ScanCode ordinal.
+     */
+    private static native int[] nativePollKeyEvents();
 
     public void renderFrame() {
         long now = System.currentTimeMillis();
@@ -40,6 +53,30 @@ public class CanvasRenderer {
         }
         lastFrameTime = now;
         frameCount++;
+
+        if (frameCount == 1) {
+            System.out.println("[CanvasRenderer] First renderFrame() call");
+        }
+
+        // Poll and dispatch key events from C-side queue
+        try {
+            int[] events = nativePollKeyEvents();
+            if (events != null) {
+                for (int i = 0; i + 1 < events.length; i += 2) {
+                    int type = events[i];
+                    int scOrdinal = events[i + 1];
+                    if (scOrdinal >= 0 && scOrdinal < scanCodes.length) {
+                        ScanCode sc = scanCodes[scOrdinal];
+                        if (sc != ScanCode.SC_NULL) {
+                            evtype_t evType = (type == 1) ? evtype_t.ev_keydown : evtype_t.ev_keyup;
+                            doom.PostEvent(new event_t.keyevent_t(evType, sc));
+                        }
+                    }
+                }
+            }
+        } catch (Throwable e) {
+            // Don't let input errors break rendering
+        }
 
         try {
             BufferedImage img = (BufferedImage) doom.graphicSystem.getScreenImage();
@@ -59,10 +96,8 @@ public class CanvasRenderer {
 
             nativeRenderFrame(pixels, w, h);
 
-        } catch (Exception e) {
-            if (frameCount <= 3) {
-                System.out.println("[CanvasRenderer] Error: " + e.getMessage());
-            }
+        } catch (Throwable e) {
+            System.out.println("[CanvasRenderer] Error (frame " + frameCount + "): " + e.getClass().getName() + ": " + e.getMessage());
         }
     }
 }

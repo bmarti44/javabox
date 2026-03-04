@@ -103,12 +103,12 @@ echo "Linking javabox-direct..."
 em++ -O3 -mtail-call -pthread \
   -sUSE_PTHREADS=1 -sSHARED_MEMORY=1 \
   -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=268435456 -sMAXIMUM_MEMORY=536870912 \
-  -sPROXY_TO_PTHREAD=1 -sPTHREAD_POOL_SIZE=8 \
+  -sPROXY_TO_PTHREAD=1 -sPTHREAD_POOL_SIZE=16 \
   -sSTACK_SIZE=4194304 -sDEFAULT_PTHREAD_STACK_SIZE=4194304 \
   -sSUPPORT_LONGJMP=wasm -fwasm-exceptions \
   -sWASM_BIGINT \
   -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createModule \
-  -sEXPORTED_FUNCTIONS='["_main","_jvm_stdin_write","_jvm_stdin_write_string","_jvm_enable_ring_buffer_stdin","_jvm_debug_stdin_state","_jvm_debug_ping","_jvm_doom_frame_ptr","_jvm_doom_frame_width","_jvm_doom_frame_height","_jvm_doom_frame_seq"]' \
+  -sEXPORTED_FUNCTIONS='["_main","_jvm_stdin_write","_jvm_stdin_write_string","_jvm_enable_ring_buffer_stdin","_jvm_debug_stdin_state","_jvm_debug_ping","_jvm_doom_frame_ptr","_jvm_doom_frame_width","_jvm_doom_frame_height","_jvm_doom_frame_seq","_jvm_doom_key_event","_jvm_audio_ring_ptr","_jvm_audio_ring_chunks","_jvm_audio_chunk_size","_jvm_audio_write_idx"]' \
   -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","HEAPU8"]' \
   -sERROR_ON_UNDEFINED_SYMBOLS=0 \
   "$JVM_MAIN_O" \

@@ -245,81 +245,94 @@ term.open(document.getElementById('terminal'));
 window.term = term;
 
 // ─── Key Input ────────────────────────────────────────────────────────────────
-// Maps browser key events to Doom ScanCode names.
-// Protocol: \x01D<SC_NAME>\n (keydown) / \x01U<SC_NAME>\n (keyup)
+// Maps browser key events to ScanCode ordinals (matching g.Signals.ScanCode enum).
+// Keys are sent directly to a C-side queue via jvm_doom_key_event WASM export.
+// Java's CanvasRenderer polls the queue each frame — no Java thread needed.
 const KEY_MAP = {
-  'ArrowUp':    'SC_UP',
-  'ArrowDown':  'SC_DOWN',
-  'ArrowLeft':  'SC_LEFT',
-  'ArrowRight': 'SC_RIGHT',
-  'Enter':      'SC_ENTER',
-  'Escape':     'SC_ESCAPE',
-  'Space':      'SC_SPACE',
-  ' ':          'SC_SPACE',
-  'Control':    'SC_LCTRL',
-  'Shift':      'SC_LSHIFT',
-  'Alt':        'SC_LALT',
-  'Tab':        'SC_TAB',
-  'Backspace':  'SC_BACKSPACE',
-  'F1':  'SC_F1',  'F2':  'SC_F2',  'F3':  'SC_F3',  'F4':  'SC_F4',
-  'F5':  'SC_F5',  'F6':  'SC_F6',  'F7':  'SC_F7',  'F8':  'SC_F8',
-  'F9':  'SC_F9',  'F10': 'SC_F10', 'F11': 'SC_F11', 'F12': 'SC_F12',
-  'Pause': 'SC_PAUSE',
+  'ArrowUp':    103,  // SC_UP
+  'ArrowDown':  108,  // SC_DOWN
+  'ArrowLeft':  105,  // SC_LEFT
+  'ArrowRight': 106,  // SC_RIGHT
+  'Enter':       28,  // SC_ENTER
+  'Escape':       1,  // SC_ESCAPE
+  'Space':       57,  // SC_SPACE
+  ' ':           57,  // SC_SPACE
+  'Control':     29,  // SC_LCTRL
+  'Shift':       42,  // SC_LSHIFT
+  'Alt':         56,  // SC_LALT
+  'Tab':         15,  // SC_TAB
+  'Backspace':   14,  // SC_BACKSPACE
+  'F1':  59,  'F2':  60,  'F3':  61,  'F4':  62,
+  'F5':  63,  'F6':  64,  'F7':  65,  'F8':  66,
+  'F9':  67,  'F10': 68,  'F11': 87,  'F12': 88,
+  'Pause': 119,
   // Number keys (weapon select)
-  '1': 'SC_1', '2': 'SC_2', '3': 'SC_3', '4': 'SC_4', '5': 'SC_5',
-  '6': 'SC_6', '7': 'SC_7', '8': 'SC_8', '9': 'SC_9', '0': 'SC_0',
+  '1': 2, '2': 3, '3': 4, '4': 5, '5': 6,
+  '6': 7, '7': 8, '8': 9, '9': 10, '0': 11,
   // WASD
-  'w': 'SC_W', 'W': 'SC_W',
-  'a': 'SC_A', 'A': 'SC_A',
-  's': 'SC_S', 'S': 'SC_S',
-  'd': 'SC_D', 'D': 'SC_D',
+  'w': 17, 'W': 17,
+  'a': 30, 'A': 30,
+  's': 31, 'S': 31,
+  'd': 32, 'D': 32,
   // Other useful keys
-  'y': 'SC_Y', 'Y': 'SC_Y',
-  'n': 'SC_N', 'N': 'SC_N',
-  ',': 'SC_COMMA',
-  '.': 'SC_PERIOD',
-  '-': 'SC_MINUS',
-  '=': 'SC_EQUALS',
+  'y': 21, 'Y': 21,
+  'n': 49, 'N': 49,
+  ',': 51,  // SC_COMMA
+  '.': 52,  // SC_PERIOD
+  '-': 12,  // SC_MINUS
+  '=': 13,  // SC_EQUALS
 };
 
 let doomActive = false;
+
+// ─── Web Audio ─────────────────────────────────────────────────────────────
+let audioCtx = null;
+let nextPlayTime = 0;
+let audioReadIdx = 0;
 
 // sendToGuest — placeholder, overridden once direct WASM module loads
 window.sendToGuest = function(raw) {
   console.warn('[sendToGuest] Module not initialized yet');
 };
 
-function sendKey(type, scanName) {
-  if (!doomActive) return;
-  window.sendToGuest('\x01' + type + scanName + '\n');
+// Post key event directly to C-side queue (no stdin, no Java thread)
+function sendKey(type, scanOrdinal) {
+  if (!doomActive || typeof Module === 'undefined') return;
+  try {
+    Module._jvm_doom_key_event(type, scanOrdinal);
+  } catch(e) { /* Module not ready */ }
 }
 
 document.addEventListener('keydown', (e) => {
   if (!doomActive) return;
+  // Initialize Web Audio on first user gesture
+  if (!audioCtx) {
+    try { audioCtx = new AudioContext({ sampleRate: 22050 }); } catch(ex) {}
+  }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   const sc = KEY_MAP[e.key];
-  if (sc) {
+  if (sc !== undefined) {
     e.preventDefault();
     e.stopPropagation();
-    sendKey('D', sc);
+    sendKey(1, sc);  // 1 = keydown
   }
 }, true);
 
 document.addEventListener('keyup', (e) => {
   if (!doomActive) return;
   const sc = KEY_MAP[e.key];
-  if (sc) {
+  if (sc !== undefined) {
     e.preventDefault();
     e.stopPropagation();
-    sendKey('U', sc);
+    sendKey(0, sc);  // 0 = keyup
   }
 }, true);
 
 // Exit button
 btnExit.addEventListener('click', () => {
-  window.sendToGuest('\x01Q\n');
   doomActive = false;
   btnExit.style.display = 'none';
-  statusEl.textContent = 'Exiting...';
+  statusEl.textContent = 'Exited';
   statusEl.className = 'booting';
 });
 
@@ -403,9 +416,7 @@ try {
       console.log('[JVM]', text);
     },
     printErr(text) {
-      // Filter JVM internal thread errors
-      if (/^Exception in thread "(Finalizer|Common-Cleaner|DoomLoop|Reference Handler)"/.test(text)) return;
-      if (text === 'java.lang.NullPointerException') return;
+      // Log ALL errors to help debug black screen issues
       console.warn('[JVM:err]', text);
     },
     onExit(code) {
@@ -428,6 +439,7 @@ try {
 
   setProgress(60, 'Initializing JVM...');
   const Module = await createModule(directModule);
+  window.Module = Module;  // Expose for diagnostics/testing
 
   // Enable ring buffer stdin (bypasses Emscripten's FS proxy for fd 0)
   Module.ccall('jvm_enable_ring_buffer_stdin', null, [], []);
@@ -460,6 +472,52 @@ try {
     doomCanvas.style.height = Math.floor(200 * scale) + 'px';
   }
 
+  // ─── Audio playback ─────────────────────────────────────────────────────
+  function playAudioChunk(ptr, byteLength) {
+    const samples = byteLength / 4;  // 1050 stereo samples (2 ch × 2 bytes)
+    const buffer = audioCtx.createBuffer(2, samples, 22050);
+    const left = buffer.getChannelData(0);
+    const right = buffer.getChannelData(1);
+    const heap = Module.HEAPU8;
+    for (let i = 0; i < samples; i++) {
+      const base = ptr + i * 4;
+      // Big-endian 16-bit signed stereo → float32
+      let l = (heap[base] << 8) | heap[base + 1];
+      let r = (heap[base + 2] << 8) | heap[base + 3];
+      if (l >= 32768) l -= 65536;
+      if (r >= 32768) r -= 65536;
+      left[i] = l / 32768.0;
+      right[i] = r / 32768.0;
+    }
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioCtx.destination);
+    const now = audioCtx.currentTime;
+    if (nextPlayTime < now) nextPlayTime = now + 0.02;
+    source.start(nextPlayTime);
+    nextPlayTime += samples / 22050;
+  }
+
+  function pollAudio() {
+    if (!audioCtx || audioCtx.state !== 'running') return;
+    if (typeof Module._jvm_audio_write_idx !== 'function') return;
+    const writeIdx = Module._jvm_audio_write_idx();
+    const ringChunks = Module._jvm_audio_ring_chunks();
+    const chunkSize = Module._jvm_audio_chunk_size();
+    const ringPtr = Module._jvm_audio_ring_ptr();
+    // If we've fallen too far behind, skip ahead to avoid a burst
+    if (writeIdx - audioReadIdx > ringChunks) {
+      audioReadIdx = writeIdx - 2;
+      nextPlayTime = 0;  // Reset scheduling
+    }
+    while (audioReadIdx < writeIdx) {
+      const idx = audioReadIdx % ringChunks;
+      const ptr = ringPtr + idx * chunkSize;
+      playAudioChunk(ptr, chunkSize);
+      audioReadIdx++;
+    }
+  }
+
   function startCanvasRendering() {
     // Switch UI: hide terminal, show canvas
     document.getElementById('terminal-container').style.display = 'none';
@@ -469,37 +527,68 @@ try {
     window.addEventListener('resize', resizeDoomCanvas);
 
     // Start rendering loop
+    let renderFrameCount = 0;
+
+    // Diagnostic: log frame_seq every 2 seconds to detect stuck DoomLoop
+    const diagInterval = setInterval(() => {
+      if (!doomActive) return;
+      const seq = Module._jvm_doom_frame_seq();
+      console.log(`[DOOM:diag] frame_seq=${seq} rendered=${renderFrameCount} lastSeq=${lastFrameSeq}`);
+      if (seq === 0 && renderFrameCount === 0) {
+        console.warn('[DOOM:diag] No frames after canvas start — DoomLoop thread may be stuck');
+      }
+    }, 2000);
+
     function renderLoop() {
       if (!doomActive) {
+        clearInterval(diagInterval);
         return;
       }
 
-      const seq = Module._jvm_doom_frame_seq();
-      if (seq > lastFrameSeq) {
-        lastFrameSeq = seq;
+      try {
+        // Poll audio ring buffer
+        pollAudio();
+      } catch(e) { /* ignore audio errors */ }
 
-        const ptr = Module._jvm_doom_frame_ptr();
-        const w = Module._jvm_doom_frame_width();
-        const h = Module._jvm_doom_frame_height();
-
-        if (ptr && w > 0 && h > 0) {
-          // Resize canvas if dimensions changed
-          if (doomCanvas.width !== w || doomCanvas.height !== h) {
-            doomCanvas.width = w;
-            doomCanvas.height = h;
-            resizeDoomCanvas();
+      try {
+        const seq = Module._jvm_doom_frame_seq();
+        if (seq > lastFrameSeq) {
+          if (lastFrameSeq === 0) {
+            console.log('[DOOM] First frame received! seq=' + seq);
+            clearInterval(diagInterval);
           }
+          lastFrameSeq = seq;
+          renderFrameCount++;
 
-          // Read RGBA pixels from shared WASM heap.
-          // Create a fresh view each frame — with ALLOW_MEMORY_GROWTH,
-          // Module.HEAPU8 is reassigned when memory grows, so we always
-          // access it directly rather than caching a reference.
-          const heap = Module.HEAPU8;
-          const pixelData = heap.subarray(ptr, ptr + w * h * 4);
-          const imageData = new ImageData(
-            new Uint8ClampedArray(pixelData), w, h
-          );
-          doomCtx.putImageData(imageData, 0, 0);
+          const ptr = Module._jvm_doom_frame_ptr();
+          const w = Module._jvm_doom_frame_width();
+          const h = Module._jvm_doom_frame_height();
+
+          if (ptr && w > 0 && h > 0) {
+            // Resize canvas if dimensions changed
+            if (doomCanvas.width !== w || doomCanvas.height !== h) {
+              doomCanvas.width = w;
+              doomCanvas.height = h;
+              resizeDoomCanvas();
+            }
+
+            // Read RGBA pixels from shared WASM heap.
+            // Create a fresh view each frame — with ALLOW_MEMORY_GROWTH,
+            // Module.HEAPU8 is reassigned when memory grows, so we always
+            // access it directly rather than caching a reference.
+            const heap = Module.HEAPU8;
+            const pixelData = heap.subarray(ptr, ptr + w * h * 4);
+            const imageData = new ImageData(
+              new Uint8ClampedArray(pixelData), w, h
+            );
+            doomCtx.putImageData(imageData, 0, 0);
+          }
+        }
+      } catch(e) {
+        // Don't let render errors kill the loop — memory growth can
+        // temporarily invalidate HEAPU8 or exported function references
+        if (renderFrameCount === 0) {
+          console.warn('[DOOM] Render error (will retry):', e.message);
         }
       }
 

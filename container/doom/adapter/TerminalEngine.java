@@ -42,7 +42,7 @@ public class TerminalEngine {
         List<String> args = new ArrayList<>(Arrays.asList(
             "-iwad", "/opt/javabox/freedoom1.wad",
             "-config", "/opt/javabox/doom.cfg",
-            "-nosound", "-nomusic", "-nosfx",
+            "-nomusic",
             "-multiply", "1"
         ));
         LOGGER.log(Level.INFO, "Pre-initializing DoomMain (snapshot warmup)...");
@@ -84,9 +84,7 @@ public class TerminalEngine {
             // Fallback: initialize on the fly (slow under WASM Zero)
             System.setProperty("java.awt.headless", "true");
             List<String> args = new ArrayList<>(Arrays.asList(argv));
-            if (!args.contains("-nosound")) args.add("-nosound");
             if (!args.contains("-nomusic")) args.add("-nomusic");
-            if (!args.contains("-nosfx")) args.add("-nosfx");
             if (!args.contains("-multiply")) {
                 args.add("-multiply");
                 args.add("1");
@@ -103,35 +101,24 @@ public class TerminalEngine {
             };
         }
 
-        // Set frame callback and start the game loop thread
+        // Set frame callback and start the game loop.
+        // Run setupLoop() on the current thread (CompileServer's pthread),
+        // which is already a fully-initialized Emscripten worker.
+        // Keyboard input is handled by CanvasRenderer.nativePollKeyEvents()
+        // (C-side queue populated by browser via jvm_doom_key_event export),
+        // so no separate input thread is needed.
         Engine.setFrameCallback(callback);
-        final DoomMain<?, ?> finalDoom = doom;
-
-        // Brief delay to let Emscripten thread pool workers initialize.
-        // Without this, thread creation can fail with NPE under WASM pthreads.
-        try { Thread.sleep(200); } catch (InterruptedException ie) { /* ok */ }
-
-        Thread doomThread = new Thread(new Runnable() {
-            public void run() {
-                try {
-                    finalDoom.setupLoop();
-                } catch (Throwable t) {
-                    // Game loop crashed — nothing we can do
-                }
-            }
-        }, "DoomLoop");
-        doomThread.setDaemon(true);
-        doomThread.start();
 
         try {
             System.out.println("JBOX_DOOM_START");
             System.out.flush();
 
-            // Read input on calling thread until quit
-            TerminalInput.readInputLoop(doom, stdin);
+            // Run game loop on current thread (reliable — already a working pthread)
+            doom.setupLoop();
 
-        } catch (Exception e) {
-            System.err.println("[TerminalEngine] Error: " + e.getMessage());
+        } catch (Throwable t) {
+            System.err.println("[DoomLoop] CRASHED: " + t.getClass().getName() + ": " + t.getMessage());
+            t.printStackTrace(System.err);
         } finally {
             Engine.setFrameCallback(null);
             System.out.print("\033[2J\033[H\033[0m");

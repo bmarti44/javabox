@@ -96,9 +96,14 @@ public interface ISoundDriver {
                 driver = new SuperDoomSoundDriver(DM, DM.numChannels);
             }
         }
-        // Check for sound init failure and revert to dummy
+        // Check for sound init failure — try WebAudio fallback for WASM environments
         if (!driver.InitSound()) {
-            LOGGER.log(Level.WARNING, "S_InitSound: failed. Reverting to dummy...");
+            LOGGER.log(Level.WARNING, "S_InitSound: failed. Trying WebAudioSoundDriver...");
+            ISoundDriver webAudio = new WebAudioSoundDriver(DM, DM.numChannels);
+            if (webAudio.InitSound()) {
+                return webAudio;
+            }
+            LOGGER.log(Level.WARNING, "S_InitSound: WebAudio failed too. Reverting to dummy...");
             return new DummySFX();
         }
         return driver;
