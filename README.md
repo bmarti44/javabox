@@ -12,7 +12,9 @@ JavaBox compiles OpenJDK 21 (Zero interpreter) directly to WebAssembly via Emscr
 
 JavaBox can run [Mocha Doom](https://github.com/axelkohlmeyer/mochadoom) — a pure-Java Doom engine — rendered to an HTML Canvas at ~30 FPS with keyboard input and sound effects.
 
-![Doom running in JavaBox](docs/doom-title.png)
+![Doom running in JavaBox](docs/doom-gameplay.png)
+
+<video src="docs/doom.mp4" controls width="100%"></video>
 
 **[Play Doom](https://javabox-demo.brian-fec.workers.dev/doom.html)**
 
