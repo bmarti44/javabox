@@ -12,7 +12,7 @@ test('direct WASM Doom: canvas rendering', async ({ page }) => {
   });
   page.on('pageerror', err => console.log('[PAGE ERROR]', err.message));
 
-  await page.goto('http://localhost:3999/doom.html?mode=direct', { waitUntil: 'domcontentloaded' });
+  await page.goto('http://localhost:3999/doom.html', { waitUntil: 'domcontentloaded' });
 
   // Wait for Doom to fully boot
   let doomStarted = false;

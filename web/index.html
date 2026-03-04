@@ -2,397 +2,315 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>JavaBox — Java in the Browser</title>
-
-  <!-- xterm.js for terminal emulation -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
-
+  <title>JavaBox</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" crossorigin="anonymous" />
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #1e1e1e; color: #d4d4d4; font-family: monospace; font-size: 13px; display: flex; flex-direction: column; height: 100vh; }
+    #header { padding: 6px 12px; background: #252526; border-bottom: 1px solid #3c3c3c; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+    #header h1 { font-size: 14px; font-weight: 600; }
+    #status { font-size: 11px; padding: 2px 8px; border-radius: 3px; background: #3c3c3c; }
+    #status.booting { background: #856404; color: #fff; }
+    #status.ready   { background: #155724; color: #fff; }
+    #status.error   { background: #721c24; color: #fff; }
+    #filename { background: #3c3c3c; border: 1px solid #555; color: #d4d4d4; padding: 2px 6px; font-family: monospace; font-size: 12px; border-radius: 3px; width: 180px; }
+    #compile-run { background: #0e639c; color: #fff; border: none; padding: 4px 14px; border-radius: 3px; cursor: pointer; font-family: monospace; font-size: 12px; font-weight: 600; }
+    #compile-run:hover:not(:disabled) { background: #1177bb; }
+    #compile-run:disabled { background: #555; cursor: not-allowed; }
+    #main { display: flex; flex: 1; overflow: hidden; }
+    #editor-panel { width: 45%; display: flex; flex-direction: column; border-right: 1px solid #3c3c3c; }
+    #editor-toolbar { padding: 4px 8px; background: #2d2d2d; border-bottom: 1px solid #3c3c3c; font-size: 11px; color: #888; }
+    #code-editor { flex: 1; resize: none; background: #1e1e1e; color: #d4d4d4; font-family: 'Menlo', 'Consolas', monospace; font-size: 13px; line-height: 1.5; padding: 8px; border: none; outline: none; tab-size: 4; white-space: pre; overflow: auto; }
+    #terminal-panel { width: 55%; display: flex; flex-direction: column; }
+    #terminal-toolbar { padding: 4px 8px; background: #2d2d2d; border-bottom: 1px solid #3c3c3c; font-size: 11px; color: #888; }
+    #terminal { flex: 1; overflow: hidden; }
+    .xterm { height: 100%; padding: 4px; }
+    .xterm-viewport { overflow-y: auto !important; }
 
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #1e1e2e;
-      color: #cdd6f4;
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
-    }
-
-    header {
-      padding: 12px 20px;
-      background: #181825;
-      border-bottom: 1px solid #313244;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    header h1 {
-      font-size: 18px;
-      font-weight: 600;
-      color: #cba6f7;
-    }
-
-    header .badge {
-      font-size: 11px;
-      padding: 2px 8px;
-      background: #313244;
-      border-radius: 12px;
-      color: #a6e3a1;
-    }
-
-    #status {
-      margin-left: auto;
-      font-size: 13px;
-      color: #6c7086;
-    }
-
-    #status.booting { color: #f9e2af; }
-    #status.ready { color: #a6e3a1; }
-    #status.error { color: #f38ba8; }
-
-    #terminal-container {
-      flex: 1;
-      padding: 8px;
-      overflow: hidden;
-    }
-
-    #terminal {
-      height: 100%;
-    }
-
+    /* Boot overlay */
     #boot-progress {
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      background: #181825;
-      border: 1px solid #313244;
-      border-radius: 12px;
-      padding: 32px 40px;
-      text-align: center;
-      min-width: 320px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: #252526; border: 1px solid #3c3c3c; border-radius: 8px;
+      padding: 24px 32px; text-align: center; min-width: 300px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6); z-index: 10;
     }
-
-    #boot-progress h2 {
-      color: #cba6f7;
-      margin-bottom: 8px;
-    }
-
-    #boot-progress p {
-      color: #6c7086;
-      font-size: 14px;
-      margin-bottom: 20px;
-    }
-
-    .progress-bar {
-      width: 100%;
-      height: 4px;
-      background: #313244;
-      border-radius: 2px;
-      overflow: hidden;
-    }
-
-    .progress-fill {
-      height: 100%;
-      background: linear-gradient(90deg, #cba6f7, #89dceb);
-      border-radius: 2px;
-      width: 0%;
-      transition: width 0.3s ease;
-      animation: progress-pulse 2s ease-in-out infinite;
-    }
-
-    @keyframes progress-pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.7; }
-    }
-
-    #boot-stage {
-      margin-top: 12px;
-      font-size: 12px;
-      color: #45475a;
-    }
+    #boot-progress h2 { font-size: 16px; margin-bottom: 8px; }
+    #boot-progress p { color: #888; font-size: 12px; margin-bottom: 16px; }
+    .progress-bar { width: 100%; height: 3px; background: #3c3c3c; border-radius: 2px; overflow: hidden; }
+    .progress-fill { height: 100%; background: #0e639c; border-radius: 2px; width: 0%; transition: width 0.3s; }
+    #boot-stage { margin-top: 8px; font-size: 11px; color: #666; }
   </style>
 </head>
 <body>
-
-<header>
-  <h1>JavaBox</h1>
-  <span class="badge" id="mode-badge">Oracle Linux 9 + JDK 21</span>
-  <span id="status" class="booting">Booting...</span>
-</header>
-
-<div id="terminal-container">
-  <div id="terminal"></div>
-</div>
-
-<!-- Boot progress overlay -->
-<div id="boot-progress">
-  <h2>Starting JavaBox</h2>
-  <p>Booting Oracle Linux 9 + JDK 21 in your browser.<br>This takes 15–60 seconds the first time.</p>
-  <div class="progress-bar">
-    <div class="progress-fill" id="progress-fill"></div>
+  <div id="header">
+    <h1>JavaBox</h1>
+    <input id="filename" value="HelloWorld.java" />
+    <button id="compile-run" disabled>Booting...</button>
+    <span id="status" class="booting">Loading...</span>
   </div>
-  <div id="boot-stage">Loading WASM...</div>
-</div>
-
-<!-- xterm.js + xterm-pty (loaded locally from WASM output dir) -->
-<script src="xterm.js"></script>
-<script src="xterm-pty.js"></script>
-
-<script>
-// ─── Configuration ────────────────────────────────────────────────────────────
-const WASM_BASE_URL = window.location.href.replace(/\/[^/]*$/, '/');
-
-// ─── Mode detection ──────────────────────────────────────────────────────────
-// ?mode=direct uses direct OpenJDK-to-WASM (fast, no QEMU)
-// ?mode=qemu   uses container2wasm QEMU pipeline (default)
-const MODE = new URLSearchParams(location.search).get('mode') || 'qemu';
-const IS_DIRECT = MODE === 'direct';
-
-if (IS_DIRECT) {
-  document.getElementById('mode-badge').textContent = 'Direct WASM + JDK 21';
-  document.getElementById('boot-progress').querySelector('p').innerHTML =
-    'Loading JDK 21 directly in your browser.<br>This takes 3\u20135 seconds.';
+  <div id="main">
+    <div id="editor-panel">
+      <div id="editor-toolbar">Editor</div>
+      <textarea id="code-editor" spellcheck="false">public class HelloWorld {
+    public static void main(String[] args) {
+        System.out.println("Hello, World!");
+    }
 }
+</textarea>
+    </div>
+    <div id="terminal-panel">
+      <div id="terminal-toolbar">Terminal</div>
+      <div id="terminal"></div>
+    </div>
+  </div>
 
-// ─── Cross-Origin Isolation guard ────────────────────────────────────────────
-if (!crossOriginIsolated) {
-  document.getElementById('boot-progress').innerHTML = `
-    <h2 style="color:#f38ba8">Missing Required Headers</h2>
-    <p>JavaBox requires Cross-Origin Isolation (SharedArrayBuffer).<br>
-    Your server must send these HTTP headers:</p>
-    <pre style="text-align:left;background:#1e1e2e;padding:12px;border-radius:8px;margin-top:12px;font-size:12px">
+  <!-- Boot progress overlay -->
+  <div id="boot-progress">
+    <h2>Starting JavaBox</h2>
+    <p>Loading JDK 21 directly in your browser.<br>This takes 3&#x2013;5 seconds.</p>
+    <div class="progress-bar">
+      <div class="progress-fill" id="progress-fill"></div>
+    </div>
+    <div id="boot-stage">Loading WASM...</div>
+  </div>
+
+  <!-- xterm.js (no xterm-pty needed for direct WASM mode) -->
+  <script src="xterm.js"></script>
+
+  <script>
+    const statusEl   = document.getElementById('status');
+    const termDiv    = document.getElementById('terminal');
+    const compileBtn = document.getElementById('compile-run');
+    const filenameEl = document.getElementById('filename');
+    const editorEl   = document.getElementById('code-editor');
+    const bootProgress = document.getElementById('boot-progress');
+    const progressFill = document.getElementById('progress-fill');
+    const bootStage    = document.getElementById('boot-stage');
+
+    function setProgress(percent, stage) {
+      progressFill.style.width = percent + '%';
+      bootStage.textContent = stage;
+    }
+
+    // ── Cross-Origin Isolation guard ──────────────────────────────────────────
+    if (!crossOriginIsolated) {
+      bootProgress.innerHTML = `
+        <h2>Missing Required Headers</h2>
+        <p>JavaBox requires Cross-Origin Isolation (SharedArrayBuffer).<br>
+        Server must send:</p>
+        <pre style="text-align:left;background:#1e1e1e;padding:8px;border-radius:4px;margin-top:8px;font-size:11px">
 Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp</pre>
-    <p style="margin-top:12px;font-size:13px">Serve with: <code>python3 build/serve.py ~/javabox-wasm</code></p>
-  `;
-  throw new Error('Cross-Origin Isolation required');
-}
-
-const progressFill = document.getElementById('progress-fill');
-const bootStage    = document.getElementById('boot-stage');
-const statusEl     = document.getElementById('status');
-const bootProgress = document.getElementById('boot-progress');
-
-function setProgress(percent, stage) {
-  progressFill.style.width = percent + '%';
-  bootStage.textContent = stage;
-}
-
-// ─── Terminal ─────────────────────────────────────────────────────────────────
-const term = new Terminal({
-  theme: {
-    background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#cba6f7',
-    selectionBackground: '#45475a',
-    black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af',
-    blue: '#89b4fa', magenta: '#cba6f7', cyan: '#89dceb', white: '#bac2de',
-  },
-  fontFamily: '"Cascadia Code", "JetBrains Mono", "Fira Code", monospace',
-  fontSize: 14, lineHeight: 1.4, cursorBlink: true,
-});
-term.open(document.getElementById('terminal'));
-window.addEventListener('resize', () => term.resize(
-  Math.floor(document.getElementById('terminal').clientWidth  / 8),
-  Math.floor(document.getElementById('terminal').clientHeight / 17),
-));
-
-// ─── xterm-pty PTY ───────────────────────────────────────────────────────────
-const { master, slave } = openpty();
-term.loadAddon(master);
-
-// ─── Browser-native networking: null netdev ───────────────────────────────────
-// QEMU uses -netdev socket,connect=localhost:8888 (→ ws://127.0.0.1:8888/).
-// We intercept it with a fake WebSocket that reports OPEN but drops all packets.
-// Linux eth0 fails gracefully; Java compilation/execution works without networking.
-(function patchWebSocket() {
-  const _OrigWS = window.WebSocket;
-  function NullNetdevSocket(url, protocols) {
-    if (/^wss?:\/\/127\.0\.0\.1:8888/.test(url)) {
-      const ws = {
-        url, readyState: 0, binaryType: 'arraybuffer',
-        CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3,
-        onopen: null, onclose: null, onmessage: null, onerror: null,
-        send(_data) {}, close() { this.readyState = 3; },
-      };
-      // Emscripten sets onopen/etc. after the constructor returns — fire async.
-      setTimeout(() => {
-        ws.readyState = 1;
-        if (typeof ws.onopen === 'function') ws.onopen({ type: 'open', target: ws });
-      }, 0);
-      return ws;
+        <p style="margin-top:8px;font-size:11px">Serve with: <code>python3 build/serve.py build/www</code></p>
+      `;
+      statusEl.textContent = 'Error';
+      statusEl.className = 'error';
+      throw new Error('Cross-Origin Isolation required');
     }
-    return new _OrigWS(url, protocols);
-  }
-  NullNetdevSocket.prototype = _OrigWS.prototype;
-  NullNetdevSocket.CONNECTING = 0; NullNetdevSocket.OPEN = 1;
-  NullNetdevSocket.CLOSING = 2;    NullNetdevSocket.CLOSED = 3;
-  window.WebSocket = NullNetdevSocket;
-})();
 
-// ─── Emscripten Module ────────────────────────────────────────────────────────
-// Must be set BEFORE arg-module.js and load.js run (they extend window.Module).
-window.Module = {
-  pty: slave,
-  // Required so pthread workers import out.js, not the extensionless fallback.
-  mainScriptUrlOrBlob: WASM_BASE_URL + 'out.js',
+    // ── xterm.js terminal ─────────────────────────────────────────────────────
+    const term = new Terminal({
+      cursorBlink: true,
+      scrollback: 5000,
+      cols: 90,
+      rows: 30,
+      fontSize: 13,
+      fontFamily: "'Menlo', 'Consolas', monospace",
+      theme: { background: '#1e1e1e' },
+    });
+    term.open(termDiv);
 
-  onExit(code) {
-    document.getElementById('boot-progress').style.display = 'none';
-    statusEl.textContent = 'Exited (' + code + ')';
-    statusEl.className = code === 0 ? 'ready' : 'error';
-  },
-  onAbort(what) {
-    statusEl.textContent = 'Aborted';
-    statusEl.className = 'error';
-    console.error('[JavaBox] WASM abort:', what);
-  },
-  setStatus(msg) { if (msg) bootStage.textContent = msg; },
-  print(text)    { term.write(text + '\r\n'); },
-  printErr(text) { term.write('\x1b[31m' + text + '\x1b[0m\r\n'); },
-};
+    // ── PTY output tracking ─────────────────────────────────────────────────
+    window._ptyWriteCount = 0;
+    window._ptyTotalBytes = 0;
+    window._ptyRecentText = '';
+    window._bootPhase = 'booting';
+    window._compileDone = false;
 
-setProgress(10, 'Loading data file…');
-</script>
-
-<!-- QEMU mode: arg-module.js and load.js configure the QEMU module -->
-<script>
-if (!IS_DIRECT) {
-  // Load QEMU-specific scripts dynamically
-  document.write('<scr' + 'ipt src="arg-module.js"></scr' + 'ipt>');
-  document.write('<scr' + 'ipt src="load.js"></scr' + 'ipt>');
-}
-</script>
-
-<script type="module">
-if (!crossOriginIsolated) throw new Error('COI required');
-
-if (IS_DIRECT) {
-  // ─── Direct WASM mode ─────────────────────────────────────────────────────
-  // Load OpenJDK Zero compiled directly to WASM — no QEMU, no Linux kernel.
-  try {
-    setProgress(20, 'Streaming WASM compilation...');
-    // Start streaming compilation immediately — browser compiles while downloading
-    const wasmPromise = WebAssembly.compileStreaming(fetch('./javabox-direct.wasm'));
-
-    setProgress(30, 'Loading JVM module...');
-    const { default: createModule } = await import('./javabox-direct.mjs');
-
-    // Direct mode: stdout goes to terminal, stdin via ring buffer bridge
-    const directModule = {
-      print(text) {
-        term.write(text + '\r\n');
-        // Track output for boot detection
-        window._ptyRecentText = ((window._ptyRecentText || '') + text + '\n').slice(-8000);
-      },
-      printErr(text) {
-        term.write('\x1b[31m' + text + '\x1b[0m\r\n');
-      },
-      onExit(code) {
-        bootProgress.style.display = 'none';
-        statusEl.textContent = 'Exited (' + code + ')';
-        statusEl.className = code === 0 ? 'ready' : 'error';
-      },
-    };
-
-    setProgress(50, 'Waiting for WASM compilation...');
-    const compiledWasm = await wasmPromise;
-
-    // Pass pre-compiled module to Emscripten — avoids double download
-    directModule.instantiateWasm = function(imports, callback) {
-      WebAssembly.instantiate(compiledWasm, imports).then(instance => {
-        callback(instance, compiledWasm);
-      });
-      return {};
-    };
-
-    setProgress(60, 'Initializing JVM...');
-    const Module = await createModule(directModule);
-    window._directModule = Module;
-
-    // Enable ring buffer stdin (bypasses Emscripten's FS proxy for fd 0)
-    Module.ccall('jvm_enable_ring_buffer_stdin', null, [], []);
-
-    // Override sendToGuest for direct mode — use ring buffer bridge
+    // sendToGuest — placeholder, overridden once direct WASM module loads
     window.sendToGuest = function(raw) {
-      Module.ccall('jvm_stdin_write_string', null, ['string'], [raw]);
+      console.warn('[sendToGuest] Module not initialized yet');
     };
 
-    setProgress(90, 'Waiting for CompileServer...');
-    bootProgress.style.display = 'none';
-    statusEl.textContent = 'Starting JVM...';
-    statusEl.className = 'booting';
-
-    // Poll for JBOX_PONG (CompileServer ready)
-    const start = Date.now();
-    const pingInterval = setInterval(() => {
-      window.sendToGuest('JBOX_PING\n');
-    }, 2000);
-
-    const checkBoot = setInterval(() => {
-      const text = window._ptyRecentText || '';
-      if (text.includes('JBOX_PONG')) {
-        clearInterval(checkBoot);
-        clearInterval(pingInterval);
-        statusEl.textContent = 'Ready';
-        statusEl.className = 'ready';
-        console.log('[JavaBox Direct] CompileServer ready');
-      }
-      if (Date.now() - start > 30000) {
-        clearInterval(checkBoot);
-        clearInterval(pingInterval);
-        statusEl.textContent = 'Boot timeout';
-        statusEl.className = 'error';
-      }
-    }, 500);
-
-  } catch (err) {
-    statusEl.textContent = 'Error';
-    statusEl.className = 'error';
-    console.error('[JavaBox Direct] boot error:', err);
-  }
-
-} else {
-  // ─── QEMU mode (original) ─────────────────────────────────────────────────
-  try {
-    setProgress(30, 'Importing QEMU module...');
-    const { default: createModule } = await import('./out.js');
-
-    setProgress(60, 'Initializing WASM runtime...');
-    await createModule(window.Module);
-
-    setProgress(90, 'Booting Linux...');
-    document.getElementById('boot-progress').style.display = 'none';
-    statusEl.textContent = 'Booting...';
-    statusEl.className = 'booting';
-
-    const sentinelPath = '/pack/workspace/.javabox/.ready';
-    const start = Date.now();
-    while (Date.now() - start < 120_000) {
-      try {
-        if (window.Module.FS?.analyzePath(sentinelPath).exists) {
-          statusEl.textContent = 'Ready';
-          statusEl.className = 'ready';
-          break;
-        }
-      } catch { /* FS not ready yet */ }
-      await new Promise(r => setTimeout(r, 1000));
+    function enableCompile() {
+      compileBtn.disabled = false;
+      compileBtn.textContent = '\u25b6 Compile & Run';
+      statusEl.textContent = 'Ready';
+      statusEl.className = 'ready';
+      console.log('[BOOT] Compile enabled');
     }
-  } catch (err) {
-    if (err?.name === 'ExitStatus') {
-      statusEl.textContent = 'Exited (' + err.status + ')';
-      statusEl.className = err.status === 0 ? 'ready' : 'error';
-    } else {
+
+    compileBtn.disabled = true;
+
+    // ── Compile & Run button ─────────────────────────────────────────────────
+    compileBtn.addEventListener('click', () => {
+      if (window._bootPhase !== 'ready') {
+        console.log('[COMPILE] Not ready (phase=' + window._bootPhase + ')');
+        return;
+      }
+      window._compileDone = false;
+      window._ptyRecentText = '';
+      term.clear();
+
+      compileBtn.disabled = true;
+      compileBtn.textContent = 'Running...';
+      statusEl.textContent = 'Running...';
+      statusEl.className = 'booting';
+
+      const source = editorEl.value;
+      const classMatch = source.match(/class\s+(\w+)/);
+      const className = classMatch ? classMatch[1] : 'Main';
+      const compileStart = Date.now();
+
+      // Send compile command to CompileServer via stdin protocol
+      const cmd = 'JBOX_COMPILE ' + className + '\n' + source + '\nJBOX_END\n';
+      window.sendToGuest(cmd);
+      console.log('[COMPILE] Sent (' + cmd.length + ' chars, class=' + className + ')');
+
+      // Watch for JBOX_EXIT:<code> from CompileServer
+      const watcher = setInterval(() => {
+        const elapsed = Math.round((Date.now() - compileStart) / 1000);
+        statusEl.textContent = 'Running... ' + elapsed + 's';
+
+        const exitMatch = (window._ptyRecentText || '').match(/JBOX_EXIT:(\d+)/);
+        if (exitMatch) {
+          clearInterval(watcher);
+          const exitCode = parseInt(exitMatch[1]);
+          window._compileDone = true;
+          compileBtn.disabled = false;
+          compileBtn.textContent = '\u25b6 Compile & Run';
+          if (exitCode === 0) {
+            statusEl.textContent = 'Done';
+            statusEl.className = 'ready';
+          } else {
+            statusEl.textContent = 'Error (exit ' + exitCode + ')';
+            statusEl.className = 'error';
+          }
+          console.log('[COMPILE] Done in ' + elapsed + 's, exit=' + exitCode);
+        }
+      }, 500);
+
+      // Timeout: 60s (direct WASM is much faster than QEMU)
+      setTimeout(() => {
+        if (!window._compileDone) {
+          clearInterval(watcher);
+          window._compileDone = true;
+          compileBtn.disabled = false;
+          compileBtn.textContent = '\u25b6 Compile & Run';
+          statusEl.textContent = 'Timed out';
+          statusEl.className = 'error';
+        }
+      }, 60000);
+    });
+
+    // ── Tab key in editor ────────────────────────────────────────────────────
+    editorEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const start = editorEl.selectionStart;
+        const end   = editorEl.selectionEnd;
+        editorEl.value = editorEl.value.substring(0, start) + '    ' + editorEl.value.substring(end);
+        editorEl.selectionStart = editorEl.selectionEnd = start + 4;
+      }
+    });
+
+    statusEl.textContent = 'Loading...';
+    statusEl.className = 'booting';
+    setProgress(10, 'Loading data file...');
+  </script>
+
+  <script type="module">
+    if (!crossOriginIsolated) throw new Error('COI required');
+
+    // ── Direct WASM bootstrap ─────────────────────────────────────────────────
+    try {
+      setProgress(20, 'Streaming WASM compilation...');
+      const wasmPromise = WebAssembly.compileStreaming(fetch('./javabox-direct.wasm'));
+
+      setProgress(30, 'Loading JVM module...');
+      const { default: createModule } = await import('./javabox-direct.mjs');
+
+      const directModule = {
+        print(text) {
+          // Track all output for boot detection and tests
+          window._ptyWriteCount++;
+          window._ptyTotalBytes += text.length;
+          window._ptyRecentText = ((window._ptyRecentText || '') + text + '\n').slice(-8000);
+          // Filter out protocol messages from terminal display
+          if (/^JBOX_(PONG|EXIT:\d+|COMPILE|END|PING|DOOM)/.test(text)) return;
+          if (/^={5,}/.test(text)) return;
+          term.write(text + '\r\n');
+        },
+        printErr(text) {
+          // Filter JVM internal thread errors from terminal display
+          if (/^Exception in thread "(Finalizer|Common-Cleaner|DoomLoop|Reference Handler)"/.test(text)) return;
+          if (text === 'java.lang.NullPointerException') return;
+          term.write('\x1b[31m' + text + '\x1b[0m\r\n');
+        },
+        onExit(code) {
+          bootProgress.style.display = 'none';
+          statusEl.textContent = 'Exited (' + code + ')';
+          statusEl.className = code === 0 ? 'ready' : 'error';
+        },
+      };
+
+      setProgress(50, 'Waiting for WASM compilation...');
+      const compiledWasm = await wasmPromise;
+
+      directModule.instantiateWasm = function(imports, callback) {
+        WebAssembly.instantiate(compiledWasm, imports).then(instance => {
+          callback(instance, compiledWasm);
+        });
+        return {};
+      };
+
+      setProgress(60, 'Initializing JVM...');
+      const Module = await createModule(directModule);
+      window._directModule = Module;
+
+      // Enable ring buffer stdin
+      Module.ccall('jvm_enable_ring_buffer_stdin', null, [], []);
+
+      // Override sendToGuest — use ring buffer bridge
+      window.sendToGuest = function(raw) {
+        Module.ccall('jvm_stdin_write_string', null, ['string'], [raw]);
+      };
+
+      setProgress(90, 'Waiting for CompileServer...');
+      bootProgress.style.display = 'none';
+      statusEl.textContent = 'Booting...';
+      statusEl.className = 'booting';
+      window._bootPhase = 'booting';
+
+      // Poll for JBOX_PONG (CompileServer ready)
+      const start = Date.now();
+      const pingInterval = setInterval(() => {
+        window.sendToGuest('JBOX_PING\n');
+      }, 2000);
+
+      const checkBoot = setInterval(() => {
+        const text = window._ptyRecentText || '';
+        if (text.includes('JBOX_PONG')) {
+          clearInterval(checkBoot);
+          clearInterval(pingInterval);
+          window._bootPhase = 'ready';
+          enableCompile();
+          console.log('[JavaBox] CompileServer ready');
+        }
+        if (Date.now() - start > 60000) {
+          clearInterval(checkBoot);
+          clearInterval(pingInterval);
+          statusEl.textContent = 'Boot timeout';
+          statusEl.className = 'error';
+        }
+      }, 500);
+
+    } catch (err) {
+      bootProgress.style.display = 'none';
       statusEl.textContent = 'Error';
       statusEl.className = 'error';
       console.error('[JavaBox] boot error:', err);
     }
-  }
-}
-</script>
-
+  </script>
 </body>
 </html>

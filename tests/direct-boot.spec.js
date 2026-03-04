@@ -7,7 +7,7 @@ test('direct WASM: boot and compile HelloWorld', async ({ page }) => {
   page.on('console', msg => console.log(`[B:${msg.type()}]`, msg.text()));
   page.on('pageerror', err => console.log('[PAGE ERROR]', err.message));
 
-  await page.goto('http://localhost:3999/index.html?mode=direct', { waitUntil: 'domcontentloaded' });
+  await page.goto('http://localhost:3999/index.html', { waitUntil: 'domcontentloaded' });
 
   // 1. Wait for JVM boot (JBOX_PONG from auto-ping in index.html)
   let booted = false;

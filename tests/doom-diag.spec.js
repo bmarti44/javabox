@@ -22,7 +22,7 @@ test('doom diagnostic — check DoomLoop and frame buffer', async ({ page }) => 
     console.log('[PAGE_ERROR]', err.message);
   });
 
-  await page.goto('http://localhost:3999/doom.html?mode=direct', { waitUntil: 'domcontentloaded' });
+  await page.goto('http://localhost:3999/doom.html', { waitUntil: 'domcontentloaded' });
   console.log('[TEST] Page loaded');
 
   // Wait for JBOX_DOOM_START

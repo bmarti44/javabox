@@ -9,7 +9,7 @@ module.exports = defineConfig({
     browserName: 'chromium',
   },
   webServer: {
-    command: `python3 ${path.join(__dirname, 'build/serve.py')} ${path.join(process.env.HOME, 'javabox-wasm')} 3999`,
+    command: `python3 ${path.join(__dirname, 'build/serve.py')} ${path.join(__dirname, 'build/www')} 3999`,
     port: 3999,
     reuseExistingServer: true,
     timeout: 10000,
