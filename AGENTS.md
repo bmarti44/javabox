@@ -4,20 +4,37 @@ This file describes the codebase structure, key constraints, and conventions for
 
 ## What This Project Is
 
-JavaBox converts an Oracle Linux 9 + JDK 21 container into browser-runnable WebAssembly using [container2wasm](https://github.com/container2wasm/container2wasm). It exposes a TypeScript SDK so JavaScript applications can compile and run Java code in-browser with no server-side Java.
+JavaBox runs JDK 21 in the browser via WebAssembly. It supports two execution modes:
+
+1. **Direct WASM** (fast): OpenJDK Zero interpreter compiled directly to WASM via Emscripten. Architecture: Browser → Emscripten WASM (OpenJDK Zero C++ interpreter) → JVM → CompileServer. Target: ~3-5s boot.
+
+2. **QEMU mode** (legacy): Container2wasm pipeline. Architecture: Browser → Emscripten WASM (QEMU) → TCG JIT → Linux kernel → JVM. Current: ~55s boot.
+
+Both modes expose the same CompileServer protocol (JBOX_PING/JBOX_COMPILE/JBOX_DOOM) and the same TypeScript SDK API.
 
 ## Repository Layout
 
 ```
-container/          Oracle Linux 9-slim + Temurin JDK 21 (Dockerfile)
-build/              Shell scripts: convert.sh, optimize.sh, cdn-upload.sh, serve-config.json
-web/                Static demo: index.html (xterm terminal), playground.html (Monaco editor)
+openjdk/            Forked OpenJDK 21u with Emscripten OS layer (branch: wasm-emscripten)
+  src/hotspot/os/emscripten/     Emscripten OS abstraction (~15 files)
+  src/hotspot/os_cpu/emscripten_zero/  Zero CPU port for Emscripten (~11 files)
+container/          Alpine Linux 3.21 + JDK 21 (Dockerfile) — QEMU mode
+build/
+  build-direct.sh   Orchestrate full direct WASM build
+  build-jvm-wasm.sh Compile OpenJDK Zero → libjvm.a via Emscripten
+  build-jdk-modules.sh  jlink JDK class library on host
+  build-doom-jar.sh     Compile Doom Java sources on host
+  link-direct-wasm.sh   Final emcc link → javabox-direct.js + .wasm + .data
+  jvm-stdin-bridge.c    SharedArrayBuffer stdin ring buffer for direct mode
+  convert.sh        c2w conversion — QEMU mode
+  serve-config.json, serve.py  Local serving with COOP/COEP headers
+web/
+  index.html        Main UI — dual mode (?mode=direct or ?mode=qemu)
+  doom.html         Doom frontend — dual mode
 packages/
   sdk/              TypeScript SDK (@javabox/sdk) — compile/run/fs API
-  relay/            c2w-net relay server Dockerfile (for full TCP/UDP networking)
-examples/           Minimal usage examples (hello-world, http-client)
-scripts/            ci.sh, benchmark.sh
-docs/               (reserved for generated docs)
+examples/           Usage examples
+tests/              Playwright e2e tests (support both modes via JAVABOX_MODE env)
 PLAN.md             Full project specification and phase breakdown
 ```
 

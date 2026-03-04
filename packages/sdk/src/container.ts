@@ -51,6 +51,14 @@ import {
  */
 const EMSCRIPTEN_WORKSPACE_PATH = '/share/workspace'; // TODO: verify in Phase 0
 
+/**
+ * Emscripten FS path for direct WASM mode.
+ * In direct mode, there is no QEMU/virtio-9p layer. The JVM runs directly
+ * in WASM with a MEMFS filesystem. Files are written to /workspace directly
+ * on the MEMFS root.
+ */
+const DIRECT_WORKSPACE_PATH = '/workspace';
+
 export class JavaContainer {
   private readonly config: JavaContainerConfig;
   private module!: EmscriptenModule;
@@ -130,6 +138,21 @@ export class JavaContainer {
     this.checkBrowserEnvironment();
 
     const { config } = this;
+    const mode = config.mode ?? 'qemu';
+
+    if (mode === 'direct') {
+      await this.initializeDirect();
+    } else {
+      await this.initializeQemu();
+    }
+  }
+
+  /**
+   * QEMU mode initialization: full container2wasm emulation path.
+   * Boots a Linux guest with Alpine + JDK via QEMU TCG in WASM.
+   */
+  private async initializeQemu(): Promise<void> {
+    const { config } = this;
     const networking = config.networking ?? { mode: 'none' };
     validateNetworkConfig(networking);
 
@@ -165,6 +188,45 @@ export class JavaContainer {
 
     // Initialize the command executor
     this.executor = new ScriptExecutor(this.module, this.pty, EMSCRIPTEN_WORKSPACE_PATH);
+
+    // Ensure the .javabox scratch directory exists
+    await this._fs.mkdir('.javabox', true);
+
+    config.onProgress?.('Container ready', 100);
+    this._ready = true;
+    config.onReady?.();
+  }
+
+  /**
+   * Direct WASM mode initialization.
+   * The JVM runs as a directly-compiled WASM module (no QEMU, no Linux guest).
+   * Uses MEMFS for filesystem and jvm_stdin_write() for stdin.
+   * Much faster boot (~2-5s vs 20-55s for QEMU mode).
+   */
+  private async initializeDirect(): Promise<void> {
+    const { config } = this;
+
+    config.onProgress?.('Loading direct WASM module...', 10);
+
+    // Set up PTY (still used for terminal display if element provided)
+    this.pty = await this.setupPty(config.terminalElement);
+
+    // Load the direct WASM module (same Emscripten loader but different binary)
+    const networking = config.networking ?? { mode: 'none' };
+    this.module = await this.loadEmscriptenModule(networking);
+
+    config.onProgress?.('Waiting for JVM to initialize...', 50);
+
+    // In direct mode, boot is fast — the JVM starts without a full OS boot.
+    // Wait for the CompileServer's JBOX_PONG or a ready sentinel.
+    const bootTimeout = config.bootTimeoutMs ?? 30_000; // shorter default for direct
+    await this.waitForDirectBoot(bootTimeout);
+
+    // Initialize filesystem with MEMFS path (no virtio-9p mapping needed)
+    this._fs = new EmscriptenVirtualFS(this.module, DIRECT_WORKSPACE_PATH);
+
+    // Initialize command executor with direct mode support
+    this.executor = new ScriptExecutor(this.module, this.pty, DIRECT_WORKSPACE_PATH);
 
     // Ensure the .javabox scratch directory exists
     await this._fs.mkdir('.javabox', true);
@@ -331,6 +393,49 @@ export class JavaContainer {
       'JavaBox: boot sentinel not detected after', timeoutMs, 'ms. ' +
       'Container may still be starting up. Check that /etc/profile.d/javabox-ready.sh ' +
       'is executing inside the guest.',
+    );
+  }
+
+  /**
+   * Wait for direct WASM mode boot.
+   * In direct mode, the JVM starts immediately without a full Linux boot.
+   * We detect readiness by polling for a MEMFS sentinel or checking if the
+   * Module's exports include jvm_stdin_write (indicating the JVM is ready).
+   */
+  private async waitForDirectBoot(timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      try {
+        // Check if the WASM module exports jvm_stdin_write (JVM is initialized)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mod = this.module as any;
+        if (typeof mod._jvm_stdin_write === 'function' || typeof mod.jvm_stdin_write === 'function') {
+          return; // JVM is ready to accept input
+        }
+
+        // Alternative: check for MEMFS sentinel file
+        const fs = this.module.FS;
+        if (fs) {
+          try {
+            const sentinelPath = `${DIRECT_WORKSPACE_PATH}/.javabox/.ready`;
+            if (fs.analyzePath(sentinelPath).exists) {
+              return;
+            }
+          } catch {
+            // FS ready but sentinel not yet written
+          }
+        }
+      } catch {
+        // Module not initialized yet
+      }
+      await sleep(200);
+    }
+
+    // Direct boot should be fast — warn if it takes too long
+    console.warn(
+      'JavaBox: direct mode boot not detected after', timeoutMs, 'ms. ' +
+      'The JVM WASM module may still be initializing.',
     );
   }
 

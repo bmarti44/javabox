@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# link-direct-wasm.sh — Final Emscripten link: libjvm.a + natives → javabox-direct.mjs + .wasm
+#
+# Links all pre-built static libraries with preloaded assets into a single
+# WASM module for running OpenJDK Zero directly in the browser.
+#
+# Output:
+#   javabox-direct.mjs       — ES6 module (factory function)
+#   javabox-direct.wasm      — WASM binary (~3MB)
+#   javabox-direct.data      — Preloaded filesystem: JDK + classes (~64MB)
+#   javabox-direct.worker.mjs — Web Worker for PROXY_TO_PTHREAD threads
+#
+# Usage:
+#   ./build/link-direct-wasm.sh                    # output to build/
+#   ./build/link-direct-wasm.sh /tmp/out           # custom output dir
+#   ./build/link-direct-wasm.sh build/ --with-doom # include Doom assets
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+OUT_DIR="${1:-build}"
+WITH_DOOM=false
+for arg in "${@:2}"; do
+  case "$arg" in
+    --with-doom) WITH_DOOM=true ;;
+  esac
+done
+
+mkdir -p "$OUT_DIR"
+
+# ── Source Emscripten SDK ──────────────────────────────────────────────────────
+if ! command -v emcc &>/dev/null; then
+  source ~/emsdk/emsdk_env.sh 2>/dev/null
+fi
+
+# ── Library paths ──────────────────────────────────────────────────────────────
+LIBJVM="openjdk/build/emscripten-zero-zero-release/hotspot/variant-zero/libjvm/objs/libjvm.a"
+LIBJAVA="build/jdk-native-wasm/libjava.a"
+LIBJIMAGE="build/jdk-native-wasm/libjimage.a"
+LIBZIP="build/jdk-native-wasm/libzip.a"
+LIBNIO="build/jdk-native-wasm/libnio.a"
+LIBFFI="third-party/libffi-emscripten/install/lib/libffi.a"
+JVM_MAIN_C="build/jvm-main.c"
+JVM_MAIN_O="build/jvm-main.o"
+
+# ── Verify prerequisites ──────────────────────────────────────────────────────
+echo "Checking prerequisites..."
+for f in "$LIBJVM" "$LIBJAVA" "$LIBJIMAGE" "$LIBZIP" "$LIBNIO" "$LIBFFI" "$JVM_MAIN_C"; do
+  if [ ! -f "$f" ]; then
+    echo "ERROR: Missing $f" >&2
+    exit 1
+  fi
+done
+if [ ! -d "build/jdk-wasm/lib" ]; then
+  echo "ERROR: JDK modules not found at build/jdk-wasm/. Run build/build-jdk-modules.sh first." >&2
+  exit 1
+fi
+
+# ── Recompile jvm-main.c if stale ─────────────────────────────────────────────
+if [ ! -f "$JVM_MAIN_O" ] || [ "$JVM_MAIN_C" -nt "$JVM_MAIN_O" ]; then
+  echo "Compiling jvm-main.c..."
+  emcc -c -O3 -pthread \
+    -I openjdk/src/hotspot/share/include/ \
+    -I openjdk/src/hotspot/os/posix/include/ \
+    -I openjdk/src/java.base/share/native/include/ \
+    -I openjdk/src/java.base/unix/native/include/ \
+    "$JVM_MAIN_C" -o "$JVM_MAIN_O"
+fi
+
+# ── Recompile CompileServer.java if stale ──────────────────────────────────────
+if [ ! -f "build/javabox-classes/CompileServer.class" ] || \
+   [ "build/CompileServer.java" -nt "build/javabox-classes/CompileServer.class" ]; then
+  echo "Compiling CompileServer.java..."
+  mkdir -p build/javabox-classes
+  javac -d build/javabox-classes build/CompileServer.java
+fi
+
+# ── Preload files ──────────────────────────────────────────────────────────────
+PRELOAD_FLAGS=(
+  --preload-file "build/jdk-wasm@/opt/jdk"
+  --preload-file "build/javabox-classes@/opt/javabox"
+)
+
+if [ "$WITH_DOOM" = true ]; then
+  echo "Including Doom assets..."
+  if [ -d "build/doom-assets" ]; then
+    [ -f "build/doom-assets/doom.jar" ] && \
+      PRELOAD_FLAGS+=(--preload-file "build/doom-assets/doom.jar@/opt/javabox/doom.jar")
+    [ -f "build/doom-assets/freedoom1.wad" ] && \
+      PRELOAD_FLAGS+=(--preload-file "build/doom-assets/freedoom1.wad@/opt/javabox/freedoom1.wad")
+    [ -f "build/doom-assets/doom.cfg" ] && \
+      PRELOAD_FLAGS+=(--preload-file "build/doom-assets/doom.cfg@/opt/javabox/doom.cfg")
+  else
+    echo "WARNING: build/doom-assets/ not found, skipping Doom"
+  fi
+fi
+
+# ── Link ───────────────────────────────────────────────────────────────────────
+echo "Linking javabox-direct..."
+em++ -O3 -mtail-call -pthread \
+  -sUSE_PTHREADS=1 -sSHARED_MEMORY=1 \
+  -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=268435456 -sMAXIMUM_MEMORY=536870912 \
+  -sPROXY_TO_PTHREAD=1 -sPTHREAD_POOL_SIZE=8 \
+  -sSTACK_SIZE=4194304 -sDEFAULT_PTHREAD_STACK_SIZE=4194304 \
+  -sSUPPORT_LONGJMP=wasm -fwasm-exceptions \
+  -sWASM_BIGINT \
+  -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createModule \
+  -sEXPORTED_FUNCTIONS='["_main","_jvm_stdin_write","_jvm_stdin_write_string","_jvm_enable_ring_buffer_stdin","_jvm_debug_stdin_state","_jvm_debug_ping","_jvm_doom_frame_ptr","_jvm_doom_frame_width","_jvm_doom_frame_height","_jvm_doom_frame_seq"]' \
+  -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","HEAPU8"]' \
+  -sERROR_ON_UNDEFINED_SYMBOLS=0 \
+  "$JVM_MAIN_O" \
+  -Wl,--whole-archive \
+  "$LIBJVM" "$LIBJAVA" "$LIBJIMAGE" "$LIBZIP" "$LIBNIO" \
+  -Wl,--no-whole-archive \
+  "$LIBFFI" \
+  "${PRELOAD_FLAGS[@]}" \
+  -o "$OUT_DIR/javabox-direct.mjs"
+
+echo ""
+echo "=== Link complete ==="
+ls -lh "$OUT_DIR"/javabox-direct.* 2>/dev/null
+echo ""
+
+# ── Copy web files ─────────────────────────────────────────────────────────────
+echo "Copying web files..."
+cp web/index.html "$OUT_DIR/"
+cp web/doom.html "$OUT_DIR/"
+
+# Copy xterm.js from node_modules if available
+if [ -f "node_modules/xterm/lib/xterm.js" ]; then
+  cp node_modules/xterm/lib/xterm.js "$OUT_DIR/"
+  echo "  Copied xterm.js from node_modules"
+fi
+if [ -f "node_modules/xterm/css/xterm.css" ]; then
+  cp node_modules/xterm/css/xterm.css "$OUT_DIR/"
+  echo "  Copied xterm.css from node_modules"
+fi
+
+echo ""
+echo "To test in Node.js:"
+echo "  cat input.txt | node --experimental-vm-modules $OUT_DIR/jvm-test-boot.mjs"
+echo ""
+echo "To serve in browser:"
+echo "  python3 build/serve.py $OUT_DIR 3000"
+echo "  Open: http://localhost:3000/index.html?mode=direct"

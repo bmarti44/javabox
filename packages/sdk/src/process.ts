@@ -190,6 +190,158 @@ export class PtySentinelExecutor {
   }
 }
 
+/**
+ * Direct WASM mode executor.
+ *
+ * In direct mode, there is no Linux guest or PTY. The JVM runs as a
+ * directly-compiled WASM module. Commands are sent via jvm_stdin_write()
+ * (an exported WASM function) using the CompileServer protocol:
+ *
+ *   JBOX_COMPILE <ClassName>\n<source>\nJBOX_END\n
+ *
+ * Output is captured from the JVM's stdout/stderr callbacks, and the
+ * JBOX_EXIT:<code> sentinel signals completion.
+ *
+ * The filesystem uses Emscripten MEMFS directly (no virtio-9p).
+ */
+export class DirectExecutor {
+  private readonly module: EmscriptenModule;
+  private readonly fs: EmscriptenFS;
+  private readonly pty: PtyInterface;
+  private readonly scratchBasePath: string;
+
+  constructor(module: EmscriptenModule, pty: PtyInterface, emscriptenBasePath: string) {
+    this.module = module;
+    this.fs = module.FS;
+    this.pty = pty;
+    this.scratchBasePath = `${emscriptenBasePath}/.javabox`;
+  }
+
+  /**
+   * Send data to the JVM's stdin via jvm_stdin_write().
+   * Falls back to PTY write if jvm_stdin_write is not available.
+   */
+  writeToJvmStdin(data: string): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mod = this.module as any;
+    if (typeof mod._jvm_stdin_write === 'function') {
+      // Convert string to bytes and write via the exported WASM function
+      const encoder = new TextEncoder();
+      const bytes = encoder.encode(data);
+      // Allocate memory in the WASM heap, copy bytes, call jvm_stdin_write, then free
+      const ptr = mod._malloc(bytes.length);
+      mod.HEAPU8.set(bytes, ptr);
+      mod._jvm_stdin_write(ptr, bytes.length);
+      mod._free(ptr);
+    } else if (typeof mod.jvm_stdin_write === 'function') {
+      mod.jvm_stdin_write(data);
+    } else {
+      // Fallback: use PTY interface (works if direct mode wraps a PTY)
+      this.pty.write(data);
+    }
+  }
+
+  /**
+   * Execute a command via the CompileServer protocol in direct mode.
+   *
+   * For shell commands, this writes a script to MEMFS and sends a
+   * JBOX_COMPILE request. For simple commands, it uses the PTY fallback.
+   */
+  async exec(command: string, timeoutMs = 60_000): Promise<ExecOutput> {
+    const id = this.generateId();
+    const emScratch = this.scratchBasePath;
+    const emStdout = `${emScratch}/out-${id}.txt`;
+    const emStderr = `${emScratch}/err-${id}.txt`;
+    const emExit = `${emScratch}/exit-${id}.txt`;
+    const emScript = `${emScratch}/run-${id}.sh`;
+
+    // Ensure scratch directory exists
+    this.mkdirIfMissing(emScratch);
+
+    const guestScratch = '/workspace/.javabox';
+    const scriptPath = `${guestScratch}/run-${id}.sh`;
+    const stdoutPath = `${guestScratch}/out-${id}.txt`;
+    const stderrPath = `${guestScratch}/err-${id}.txt`;
+    const exitCodePath = `${guestScratch}/exit-${id}.txt`;
+
+    // Write the runner script to MEMFS
+    const script = [
+      '#!/bin/bash',
+      `${command} >"${stdoutPath}" 2>"${stderrPath}"`,
+      `echo $? >"${exitCodePath}"`,
+    ].join('\n') + '\n';
+
+    this.fs.writeFile(emScript, script);
+
+    const start = performance.now();
+
+    // Send command via jvm_stdin_write or PTY fallback
+    this.writeToJvmStdin(`bash "${scriptPath}"\n`);
+
+    // Poll MEMFS for the exit code sentinel file
+    const exitCodeStr = await this.pollForFile(emExit, timeoutMs);
+    const durationMs = performance.now() - start;
+
+    // Read output files from MEMFS
+    let stdout = '';
+    let stderr = '';
+    try { stdout = this.fs.readFile(emStdout, { encoding: 'utf8' }) as string; } catch { /* empty */ }
+    try { stderr = this.fs.readFile(emStderr, { encoding: 'utf8' }) as string; } catch { /* empty */ }
+
+    // Clean up
+    this.cleanup([emScript, emStdout, emStderr, emExit]);
+
+    return {
+      exitCode: parseInt(exitCodeStr.trim(), 10),
+      stdout,
+      stderr,
+      durationMs,
+    };
+  }
+
+  private async pollForFile(emPath: string, timeoutMs: number): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const analysis = this.fs.analyzePath(emPath);
+        if (analysis.exists) {
+          await sleep(50);
+          return this.fs.readFile(emPath, { encoding: 'utf8' }) as string;
+        }
+      } catch {
+        // FS not ready yet
+      }
+      await sleep(100); // Faster polling for direct mode
+    }
+    throw new Error(`exec timed out after ${timeoutMs}ms (direct mode)`);
+  }
+
+  private mkdirIfMissing(path: string): void {
+    try {
+      this.fs.stat(path);
+    } catch {
+      const parts = path.split('/').filter(Boolean);
+      let current = '';
+      for (const part of parts) {
+        current += '/' + part;
+        try { this.fs.stat(current); } catch {
+          try { this.fs.mkdir(current); } catch { /* already exists */ }
+        }
+      }
+    }
+  }
+
+  private cleanup(paths: string[]): void {
+    for (const p of paths) {
+      try { this.fs.unlink(p); } catch { /* ignore */ }
+    }
+  }
+
+  private generateId(): string {
+    return crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+  }
+}
+
 export interface ExecOutput {
   exitCode: number;
   stdout: string;

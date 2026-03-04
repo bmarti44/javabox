@@ -16,5 +16,8 @@
   "type": "commonjs",
   "devDependencies": {
     "@playwright/test": "^1.57.0"
+  },
+  "dependencies": {
+    "wrangler": "^4.69.0"
   }
 }

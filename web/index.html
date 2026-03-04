@@ -121,7 +121,7 @@
 
 <header>
   <h1>JavaBox</h1>
-  <span class="badge">Oracle Linux 9 + JDK 21</span>
+  <span class="badge" id="mode-badge">Oracle Linux 9 + JDK 21</span>
   <span id="status" class="booting">Booting...</span>
 </header>
 
@@ -146,6 +146,18 @@
 <script>
 // ─── Configuration ────────────────────────────────────────────────────────────
 const WASM_BASE_URL = window.location.href.replace(/\/[^/]*$/, '/');
+
+// ─── Mode detection ──────────────────────────────────────────────────────────
+// ?mode=direct uses direct OpenJDK-to-WASM (fast, no QEMU)
+// ?mode=qemu   uses container2wasm QEMU pipeline (default)
+const MODE = new URLSearchParams(location.search).get('mode') || 'qemu';
+const IS_DIRECT = MODE === 'direct';
+
+if (IS_DIRECT) {
+  document.getElementById('mode-badge').textContent = 'Direct WASM + JDK 21';
+  document.getElementById('boot-progress').querySelector('p').innerHTML =
+    'Loading JDK 21 directly in your browser.<br>This takes 3\u20135 seconds.';
+}
 
 // ─── Cross-Origin Isolation guard ────────────────────────────────────────────
 if (!crossOriginIsolated) {
@@ -246,30 +258,117 @@ window.Module = {
 setProgress(10, 'Loading data file…');
 </script>
 
-<!-- arg-module.js sets Module['arguments'] (QEMU CLI args incl. -incoming vm.state).
-     load.js adds the data preload for the 250 MB container filesystem.
-     Both must run as classic scripts so they extend window.Module. -->
-<script src="arg-module.js"></script>
-<script src="load.js"></script>
+<!-- QEMU mode: arg-module.js and load.js configure the QEMU module -->
+<script>
+if (!IS_DIRECT) {
+  // Load QEMU-specific scripts dynamically
+  document.write('<scr' + 'ipt src="arg-module.js"></scr' + 'ipt>');
+  document.write('<scr' + 'ipt src="load.js"></scr' + 'ipt>');
+}
+</script>
 
 <script type="module">
-if (crossOriginIsolated) {
+if (!crossOriginIsolated) throw new Error('COI required');
+
+if (IS_DIRECT) {
+  // ─── Direct WASM mode ─────────────────────────────────────────────────────
+  // Load OpenJDK Zero compiled directly to WASM — no QEMU, no Linux kernel.
   try {
-    setProgress(30, 'Importing QEMU module…');
-    const { default: createModule } = await import('./out.js');
+    setProgress(20, 'Streaming WASM compilation...');
+    // Start streaming compilation immediately — browser compiles while downloading
+    const wasmPromise = WebAssembly.compileStreaming(fetch('./javabox-direct.wasm'));
 
-    setProgress(60, 'Initializing WASM runtime…');
-    // createModule returns Module["ready"] — resolves at WASM init, not when QEMU exits.
-    // QEMU runs in a pthread Worker; onExit above fires when it actually exits.
-    await createModule(window.Module);
+    setProgress(30, 'Loading JVM module...');
+    const { default: createModule } = await import('./javabox-direct.mjs');
 
-    setProgress(90, 'Booting Linux…');
-    document.getElementById('boot-progress').style.display = 'none';
-    statusEl.textContent = 'Booting…';
+    // Direct mode: stdout goes to terminal, stdin via ring buffer bridge
+    const directModule = {
+      print(text) {
+        term.write(text + '\r\n');
+        // Track output for boot detection
+        window._ptyRecentText = ((window._ptyRecentText || '') + text + '\n').slice(-8000);
+      },
+      printErr(text) {
+        term.write('\x1b[31m' + text + '\x1b[0m\r\n');
+      },
+      onExit(code) {
+        bootProgress.style.display = 'none';
+        statusEl.textContent = 'Exited (' + code + ')';
+        statusEl.className = code === 0 ? 'ready' : 'error';
+      },
+    };
+
+    setProgress(50, 'Waiting for WASM compilation...');
+    const compiledWasm = await wasmPromise;
+
+    // Pass pre-compiled module to Emscripten — avoids double download
+    directModule.instantiateWasm = function(imports, callback) {
+      WebAssembly.instantiate(compiledWasm, imports).then(instance => {
+        callback(instance, compiledWasm);
+      });
+      return {};
+    };
+
+    setProgress(60, 'Initializing JVM...');
+    const Module = await createModule(directModule);
+    window._directModule = Module;
+
+    // Enable ring buffer stdin (bypasses Emscripten's FS proxy for fd 0)
+    Module.ccall('jvm_enable_ring_buffer_stdin', null, [], []);
+
+    // Override sendToGuest for direct mode — use ring buffer bridge
+    window.sendToGuest = function(raw) {
+      Module.ccall('jvm_stdin_write_string', null, ['string'], [raw]);
+    };
+
+    setProgress(90, 'Waiting for CompileServer...');
+    bootProgress.style.display = 'none';
+    statusEl.textContent = 'Starting JVM...';
     statusEl.className = 'booting';
 
-    // Poll for the boot sentinel: /etc/profile.d/javabox-ready.sh touches this on login.
-    // The sentinel path in Emscripten's VFS reflects the virtio-9p passthrough mount.
+    // Poll for JBOX_PONG (CompileServer ready)
+    const start = Date.now();
+    const pingInterval = setInterval(() => {
+      window.sendToGuest('JBOX_PING\n');
+    }, 2000);
+
+    const checkBoot = setInterval(() => {
+      const text = window._ptyRecentText || '';
+      if (text.includes('JBOX_PONG')) {
+        clearInterval(checkBoot);
+        clearInterval(pingInterval);
+        statusEl.textContent = 'Ready';
+        statusEl.className = 'ready';
+        console.log('[JavaBox Direct] CompileServer ready');
+      }
+      if (Date.now() - start > 30000) {
+        clearInterval(checkBoot);
+        clearInterval(pingInterval);
+        statusEl.textContent = 'Boot timeout';
+        statusEl.className = 'error';
+      }
+    }, 500);
+
+  } catch (err) {
+    statusEl.textContent = 'Error';
+    statusEl.className = 'error';
+    console.error('[JavaBox Direct] boot error:', err);
+  }
+
+} else {
+  // ─── QEMU mode (original) ─────────────────────────────────────────────────
+  try {
+    setProgress(30, 'Importing QEMU module...');
+    const { default: createModule } = await import('./out.js');
+
+    setProgress(60, 'Initializing WASM runtime...');
+    await createModule(window.Module);
+
+    setProgress(90, 'Booting Linux...');
+    document.getElementById('boot-progress').style.display = 'none';
+    statusEl.textContent = 'Booting...';
+    statusEl.className = 'booting';
+
     const sentinelPath = '/pack/workspace/.javabox/.ready';
     const start = Date.now();
     while (Date.now() - start < 120_000) {

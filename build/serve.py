@@ -33,6 +33,9 @@ class COOPHandler(http.server.SimpleHTTPRequestHandler):
         base = os.path.basename(path)
         if base == 'qemu-system-x86_64':
             return 'application/javascript'
+        # .mjs files need JavaScript MIME type for ES6 module imports
+        if path.endswith('.mjs'):
+            return 'application/javascript'
         return super().guess_type(path)
 
     # Silence the access log unless an error occurs

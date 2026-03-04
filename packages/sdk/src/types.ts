@@ -3,6 +3,17 @@ export interface JavaContainerConfig {
   /** URL to the directory containing the c2w --to-js output files */
   wasmBaseUrl: string;
 
+  /**
+   * Execution mode:
+   * - 'qemu': Full container2wasm QEMU emulation (default). Runs a full Linux
+   *   guest with Alpine + JDK via QEMU TCG. Slow boot (~20-55s) but full OS.
+   * - 'direct': Direct WASM execution. The JVM runs as a directly-compiled
+   *   WASM module (e.g., via CheerpJ or similar). Much faster boot (~2-5s),
+   *   uses MEMFS instead of virtio-9p, and writes to JVM stdin via
+   *   jvm_stdin_write() instead of PTY.
+   */
+  mode?: 'qemu' | 'direct';
+
   /** Networking mode */
   networking?:
     | { mode: 'browser' }                              // HTTP/S only via browser Fetch API (c2w-net-proxy)

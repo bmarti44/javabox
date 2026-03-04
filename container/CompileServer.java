@@ -44,6 +44,8 @@ public class CompileServer {
             line = line.trim();
             if (line.startsWith("JBOX_COMPILE ")) {
                 handleCompile(in, line.substring(13).trim());
+            } else if (line.equals("JBOX_DOOM")) {
+                handleDoom(in);
             } else if (line.equals("JBOX_PING")) {
                 System.out.println("JBOX_PONG");
                 System.out.flush();
@@ -58,7 +60,7 @@ public class CompileServer {
             try (FileWriter w = new FileWriter(f)) {
                 w.write("class _W { public static void main(String[] a) {} }");
             }
-            compiler.run(null, OutputStream.nullOutputStream(), OutputStream.nullOutputStream(), f.getPath());
+            compiler.run(null, OutputStream.nullOutputStream(), OutputStream.nullOutputStream(), "-d", "/tmp", f.getPath());
             URLClassLoader loader = new URLClassLoader(new URL[] { new File("/tmp/").toURI().toURL() });
             Class<?> cls = loader.loadClass("_W");
             Method m = cls.getMethod("main", String[].class);
@@ -70,6 +72,37 @@ public class CompileServer {
         } catch (Exception e) {
             System.err.println("[CompileServer] WARN: warmup failed: " + e.getMessage());
         }
+
+        // Pre-initialize Doom (heavy WAD/BSP/texture loading at snapshot time).
+        // This runs during c2w snapshot capture at near-native speed (~3s).
+        // The initialized DoomMain is saved in the snapshot and restored at runtime,
+        // making JBOX_DOOM -> JBOX_DOOM_START near-instant.
+        try {
+            TerminalEngine.warmup();
+        } catch (Exception e) {
+            System.err.println("[CompileServer] WARN: doom warmup failed: " + e.getMessage());
+            e.printStackTrace(System.err);
+        }
+    }
+
+    private static void handleDoom(BufferedReader in) {
+        try {
+            // Run Doom in-process using TerminalEngine.
+            // TerminalEngine.runDoom blocks reading stdin for input events
+            // until the user sends \x01Q (quit). The Doom game loop runs
+            // in a daemon thread and dies when runDoom returns.
+            String[] args = new String[] {
+                "-iwad", "/opt/javabox/freedoom1.wad",
+                "-config", "/opt/javabox/doom.cfg"
+            };
+            TerminalEngine.runDoom(args, in);
+            System.out.println("JBOX_EXIT:0");
+        } catch (Exception e) {
+            System.err.println("[CompileServer] Doom error: " + e.getMessage());
+            e.printStackTrace(System.err);
+            System.out.println("JBOX_EXIT:1");
+        }
+        System.out.flush();
     }
 
     private static void handleCompile(BufferedReader in, String className) {
@@ -86,9 +119,10 @@ public class CompileServer {
             File srcFile = new File("/tmp/" + className + ".java");
             try (FileWriter w = new FileWriter(srcFile)) { w.write(src.toString()); }
 
-            // Compile in-process
+            // Compile in-process (use -d /tmp to explicitly set output dir,
+            // works around NIO Files.newOutputStream issues on Emscripten MEMFS)
             ByteArrayOutputStream compileOut = new ByteArrayOutputStream();
-            int rc = compiler.run(null, compileOut, compileOut, srcFile.getPath());
+            int rc = compiler.run(null, compileOut, compileOut, "-d", "/tmp", srcFile.getPath());
             String compileOutput = compileOut.toString().trim();
             if (!compileOutput.isEmpty()) {
                 System.out.println(compileOutput);

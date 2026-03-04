@@ -9,13 +9,24 @@ import type { VirtualFS } from './types';
  * configured mount point.
  *
  * PATH MAPPING (verify empirically in Phase 0):
- *   Emscripten FS: /share/workspace/  →  Guest: /workspace/
+ *   QEMU mode:   Emscripten FS: /share/workspace/  →  Guest: /workspace/
+ *   Direct mode:  Emscripten FS: /workspace/        →  JVM: /workspace/
  *
- * How to verify:
+ * In direct mode, there is no QEMU/virtio-9p layer. The JVM runs directly
+ * in WASM with a MEMFS filesystem. Files written to /workspace on the
+ * Emscripten FS are immediately visible to the JVM without any path
+ * translation. This makes filesystem operations faster and more reliable.
+ *
+ * How to verify (QEMU mode):
  *   1. Write a file via Module.FS.writeFile('/share/workspace/test.txt', 'hello')
  *   2. In the guest terminal, run: cat /workspace/test.txt
  *   3. If it shows "hello", the mapping is correct.
  *   4. Inspect the generated out.js for -virtfs or -fsdev QEMU flags to confirm.
+ *
+ * How to verify (Direct mode):
+ *   1. Write a file via Module.FS.writeFile('/workspace/test.txt', 'hello')
+ *   2. The JVM can read it directly at /workspace/test.txt
+ *   3. No path translation needed — MEMFS paths are used directly.
  */
 export class EmscriptenVirtualFS implements VirtualFS {
   private readonly fs: EmscriptenFS;
@@ -136,6 +147,19 @@ export interface EmscriptenModule {
   stdout?: (char: number) => void;
   stderr?: (char: number) => void;
   onRuntimeInitialized?: () => void;
+
+  // Direct WASM mode exports (available when mode === 'direct')
+
+  /** Write bytes to JVM stdin. Used by DirectExecutor to send CompileServer commands. */
+  _jvm_stdin_write?: (ptr: number, len: number) => void;
+  /** Alternative JS-friendly stdin write (string-based). */
+  jvm_stdin_write?: (data: string) => void;
+  /** Allocate memory on the WASM heap (for passing buffers to _jvm_stdin_write). */
+  _malloc?: (size: number) => number;
+  /** Free memory on the WASM heap. */
+  _free?: (ptr: number) => void;
+  /** Typed view of the WASM heap (for copying bytes before calling _jvm_stdin_write). */
+  HEAPU8?: Uint8Array;
 }
 
 export interface EmscriptenFS {
