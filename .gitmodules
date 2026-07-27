@@ -1,0 +1,8 @@
+[submodule "openjdk"]
+	path = openjdk
+	url = https://github.com/bmarti44/openjdk.git
+	branch = wasm-emscripten
+[submodule "third-party/libffi-emscripten"]
+	path = third-party/libffi-emscripten
+	url = https://github.com/bmarti44/libffi-emscripten.git
+	branch = wasm-emscripten

@@ -2,5 +2,11 @@ node_modules/
 test-results/
 .idea/
 .wrangler/
-build/
+build/*.log
+build/jvm-main.o
+build/jdk-native-wasm/
+build/jdk-wasm/
+build/javabox-classes/
+build/doom-assets/
+build/**/*.jar
 tests/screenshots/

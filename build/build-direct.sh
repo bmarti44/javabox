@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # build-direct.sh — Orchestrate the full direct WASM build pipeline
 #
-# Builds OpenJDK Zero → WASM in 4 steps:
+# Builds OpenJDK Zero → WASM in 5 steps:
 #   1. build-jvm-wasm.sh    — Compile OpenJDK HotSpot Zero with Emscripten
-#   2. build-jdk-modules.sh — Create JDK class library via jlink
-#   3. build-doom-jar.sh    — Compile Doom Java sources (optional)
-#   4. link-direct-wasm.sh  — Final emcc link → javabox-direct.js + .wasm + .data
+#   2. build-jdk-native.sh  — Build OpenJDK native static libraries
+#   3. build-jdk-modules.sh — Create JDK class library via jlink
+#   4. build-doom-jar.sh    — Compile Doom Java sources (optional)
+#   5. link-direct-wasm.sh  — Final emcc link → javabox-direct.js + .wasm + .data
 #
 # Usage:
 #   ./build/build-direct.sh <output-dir> [--with-doom] [--clean] [--release]
@@ -14,6 +15,47 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/jdk-detect.sh"
+cd "$REPO_ROOT"
+
+# ── Check prerequisites ───────────────────────────────────────────────────────
+if [ ! -f "$REPO_ROOT/openjdk/make/Main.gmk" ] || \
+   [ ! -f "$REPO_ROOT/third-party/libffi-emscripten/configure.ac" ]; then
+  echo "Submodules not initialized. Run: git submodule update --init --recursive" >&2
+  exit 1
+fi
+
+if ! command -v emcc &>/dev/null; then
+  if [ -f ~/emsdk/emsdk_env.sh ]; then
+    source ~/emsdk/emsdk_env.sh 2>/dev/null
+  fi
+fi
+if ! command -v emcc &>/dev/null; then
+  echo "ERROR: emcc not found. Activate the Emscripten SDK and try again." >&2
+  exit 1
+fi
+
+BOOT_JDK="$(javabox_require_jdk "21 20" JAVABOX_BOOT_JDK \
+  "boot JDK for compiling OpenJDK 21")"
+BOOT_JDK_VERSION="$("$BOOT_JDK/bin/java" -version 2>&1 | sed -n '1p')"
+JDK21_HOME="$(javabox_require_jdk "21" JAVABOX_JDK21_HOME \
+  "jlink for building the JDK 21 class library")"
+
+if ! command -v javac &>/dev/null; then
+  echo "ERROR: javac not found. Install a host JDK 21 or newer and try again." >&2
+  exit 1
+fi
+
+JAVAC_VERSION="$(javac -version 2>&1)"
+JAVAC_MAJOR="$(javabox_jdk_major "$JAVAC_VERSION")"
+if [ -z "$JAVAC_MAJOR" ] || [ "$JAVAC_MAJOR" -lt 21 ]; then
+  echo "ERROR: Host javac must be version 21 or newer. Found: $JAVAC_VERSION" >&2
+  exit 1
+fi
+
+EMCC_VERSION="$(emcc --version 2>&1 | sed -n '1p')"
+
 OUTPUT_DIR="${1:?Usage: $0 <output-dir> [--with-doom] [--clean] [--release]}"
 shift
 
@@ -36,11 +78,16 @@ echo "Doom:      $WITH_DOOM"
 echo "Clean:     $CLEAN"
 echo "Release:   $RELEASE"
 echo ""
+echo "Resolved tools:"
+echo "  emcc:     $EMCC_VERSION"
+echo "  Boot JDK: $BOOT_JDK ($BOOT_JDK_VERSION)"
+echo "  JDK 21:   $JDK21_HOME"
+echo ""
 
 START_TIME=$(date +%s)
 
 # Step 1: Build OpenJDK Zero for WASM
-echo ">>> Step 1/4: Building OpenJDK Zero for WASM..."
+echo ">>> Step 1/5: Building OpenJDK Zero for WASM..."
 if [ "$CLEAN" = true ]; then
   "$SCRIPT_DIR/build-jvm-wasm.sh" --clean
 else
@@ -48,25 +95,30 @@ else
 fi
 echo ""
 
-# Step 2: Create JDK modules
-echo ">>> Step 2/4: Creating JDK class library..."
+# Step 2: Build JDK native libraries
+echo ">>> Step 2/5: Building JDK native libraries..."
+"$SCRIPT_DIR/build-jdk-native.sh"
+echo ""
+
+# Step 3: Create JDK modules
+echo ">>> Step 3/5: Creating JDK class library..."
 "$SCRIPT_DIR/build-jdk-modules.sh"
 echo ""
 
-# Step 3: Build Doom (optional)
+# Step 4: Build Doom (optional)
 if [ "$WITH_DOOM" = true ]; then
-  echo ">>> Step 3/4: Building Doom assets..."
+  echo ">>> Step 4/5: Building Doom assets..."
   "$SCRIPT_DIR/build-doom-jar.sh"
   echo ""
   DOOM_FLAG="--with-doom"
 else
-  echo ">>> Step 3/4: Skipping Doom (use --with-doom to include)"
+  echo ">>> Step 4/5: Skipping Doom (use --with-doom to include)"
   echo ""
   DOOM_FLAG=""
 fi
 
-# Step 4: Final link
-echo ">>> Step 4/4: Linking final WASM module..."
+# Step 5: Final link
+echo ">>> Step 5/5: Linking final WASM module..."
 RELEASE_FLAG=""
 [ "$RELEASE" = true ] && RELEASE_FLAG="--release"
 "$SCRIPT_DIR/link-direct-wasm.sh" "$OUTPUT_DIR" $DOOM_FLAG $RELEASE_FLAG

@@ -6,7 +6,7 @@
 #
 # Prerequisites:
 #   - Emscripten SDK (emsdk) activated in PATH
-#   - Host JDK 21 for boot JDK
+#   - A boot JDK 20 or 21 (set JAVABOX_BOOT_JDK to override detection)
 #   - libffi built for Emscripten
 #
 # Usage:
@@ -18,6 +18,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OPENJDK_DIR="$REPO_ROOT/openjdk"
 BUILD_DIR="$OPENJDK_DIR/build/emscripten-zero"
+BOOT_JDK=""
+BOOT_JDK_VERSION=""
+
+source "$SCRIPT_DIR/jdk-detect.sh"
 
 # Check prerequisites
 check_prereqs() {
@@ -29,63 +33,71 @@ check_prereqs() {
     exit 1
   fi
 
-  if ! command -v java &>/dev/null; then
-    echo "ERROR: java not found. Need a host JDK 21 as boot JDK."
-    exit 1
-  fi
+  BOOT_JDK="$(javabox_require_jdk "21 20" JAVABOX_BOOT_JDK \
+    "boot JDK for compiling OpenJDK 21")"
+  BOOT_JDK_VERSION="$("$BOOT_JDK/bin/java" -version 2>&1 | sed -n '1p')"
 
   echo "Emscripten: $(emcc --version | head -1)"
-  echo "Host JDK:   $(java -version 2>&1 | head -1)"
+  echo "Boot JDK:   $BOOT_JDK ($BOOT_JDK_VERSION)"
 }
 
 # Build libffi for Emscripten if not already built
 build_libffi() {
   local LIBFFI_DIR="$REPO_ROOT/third-party/libffi-emscripten"
+  LIBFFI_PREFIX="$LIBFFI_DIR/install"
 
-  if [ -f "$LIBFFI_DIR/lib/libffi.a" ]; then
+  if [ -f "$LIBFFI_PREFIX/lib/libffi.a" ]; then
     echo "libffi already built for Emscripten"
-    LIBFFI_PREFIX="$LIBFFI_DIR"
     return
   fi
 
-  echo "Building libffi for Emscripten..."
-  mkdir -p "$REPO_ROOT/third-party"
-
-  if [ ! -d "$LIBFFI_DIR" ]; then
-    git clone --depth 1 https://github.com/nicknisi/libffi-emscripten.git "$LIBFFI_DIR" || {
-      # Fallback: build from upstream libffi with Emscripten
-      echo "Cloning upstream libffi..."
-      git clone --depth 1 --branch v3.4.6 https://github.com/libffi/libffi.git "$LIBFFI_DIR"
-    }
+  if [ ! -d "$LIBFFI_DIR" ] || [ ! -f "$LIBFFI_DIR/configure.ac" ]; then
+    echo "ERROR: libffi submodule is not initialized." >&2
+    echo "Run: git submodule update --init --recursive" >&2
+    exit 1
   fi
 
-  cd "$LIBFFI_DIR"
+  echo "Building libffi for Emscripten..."
 
   # Use emconfigure/emmake for cross-compilation
-  if [ -f configure ]; then
-    emconfigure ./configure \
-      --host=wasm32-unknown-emscripten \
-      --prefix="$LIBFFI_DIR" \
-      --enable-static \
-      --disable-shared \
-      --disable-docs
-    emmake make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
-    emmake make install
-  else
-    # Try autoconf first
-    autoreconf -i 2>/dev/null || true
-    emconfigure ./configure \
-      --host=wasm32-unknown-emscripten \
-      --prefix="$LIBFFI_DIR" \
-      --enable-static \
-      --disable-shared \
-      --disable-docs
-    emmake make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
-    emmake make install
+  if [ ! -f "$LIBFFI_DIR/configure" ]; then
+    if ! (cd "$LIBFFI_DIR" && autoreconf -i); then
+      echo "ERROR: autoreconf failed while generating the libffi configure script." >&2
+      echo "Install the required Autotools packages and retry." >&2
+      exit 1
+    fi
   fi
 
-  cd "$REPO_ROOT"
-  LIBFFI_PREFIX="$LIBFFI_DIR"
+  (
+    cd "$LIBFFI_DIR"
+    emconfigure ./configure \
+      --host=wasm32-unknown-emscripten \
+      --prefix="$LIBFFI_PREFIX" \
+      --enable-static \
+      --disable-shared \
+      --disable-docs
+  )
+
+  local LIBFFI_MAKE_DIR
+  if [ -f "$LIBFFI_DIR/wasm32-unknown-emscripten/Makefile" ]; then
+    # libffi's multilib top-level make fails at all-configured; build from the host subdirectory.
+    LIBFFI_MAKE_DIR="$LIBFFI_DIR/wasm32-unknown-emscripten"
+  else
+    LIBFFI_MAKE_DIR="$LIBFFI_DIR"
+  fi
+
+  (
+    cd "$LIBFFI_MAKE_DIR"
+    emmake make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+    emmake make install
+  )
+
+  if [ ! -f "$LIBFFI_PREFIX/lib/libffi.a" ] || [ ! -f "$LIBFFI_PREFIX/include/ffi.h" ]; then
+    echo "ERROR: libffi installation is incomplete at $LIBFFI_PREFIX." >&2
+    echo "Expected lib/libffi.a and include/ffi.h; inspect the configure and install output above." >&2
+    exit 1
+  fi
+
   echo "libffi built successfully at $LIBFFI_PREFIX"
 }
 
@@ -103,14 +115,6 @@ configure_openjdk() {
 
   echo "Configuring OpenJDK for Emscripten/Zero..."
   cd "$OPENJDK_DIR"
-
-  # Detect boot JDK
-  local BOOT_JDK
-  if [ -n "${JAVA_HOME:-}" ]; then
-    BOOT_JDK="$JAVA_HOME"
-  else
-    BOOT_JDK="$(dirname $(dirname $(which java)))"
-  fi
 
   # Emscripten sysroot
   local EMSDK_SYSROOT

@@ -12,6 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/jdk-detect.sh"
 
 OUTPUT_DIR="${1:-$REPO_ROOT/build/doom-assets}"
 DOOM_SRC="$REPO_ROOT/container/doom/src"
@@ -25,32 +26,38 @@ if [ -f "$OUTPUT_DIR/doom.jar" ]; then
 fi
 
 # Check for host JDK
-JAVAC="${JAVA_HOME:-$(dirname $(dirname $(which java)))}/bin/javac"
-JAR="${JAVA_HOME:-$(dirname $(dirname $(which java)))}/bin/jar"
+HOST_JDK=""
+if HOST_JDK="$(javabox_find_jdk "26 25 24 23 22 21" JAVABOX_JDK_HOME)"; then
+  JAVAC="$HOST_JDK/bin/javac"
+  JAR="$HOST_JDK/bin/jar"
+else
+  JAVAC="$(command -v javac 2>/dev/null || true)"
+  JAR="$(command -v jar 2>/dev/null || true)"
+fi
 
-if [ ! -x "$JAVAC" ]; then
-  echo "ERROR: javac not found. Set JAVA_HOME to a JDK 21 installation."
+if [ ! -x "$JAVAC" ] || [ ! -x "$JAR" ]; then
+  echo "ERROR: javac and jar not found. Set JAVABOX_JDK_HOME to a JDK 21 or newer installation."
   exit 1
 fi
 
 # Collect all Java source files
-TMPDIR=$(mktemp -d)
-trap "rm -rf $TMPDIR" EXIT
+DOOM_TMP_DIR=$(mktemp -d)
+trap 'rm -rf "$DOOM_TMP_DIR"' EXIT
 
 echo "Compiling Doom sources..."
 
 # Find all .java files in doom src and adapter
-find "$DOOM_SRC" "$ADAPTER_SRC" -name "*.java" > "$TMPDIR/sources.txt"
-SRCCOUNT=$(wc -l < "$TMPDIR/sources.txt" | tr -d ' ')
+find "$DOOM_SRC" "$ADAPTER_SRC" -name "*.java" > "$DOOM_TMP_DIR/sources.txt"
+SRCCOUNT=$(wc -l < "$DOOM_TMP_DIR/sources.txt" | tr -d ' ')
 echo "  $SRCCOUNT source files"
 
 # Compile
-mkdir -p "$TMPDIR/classes"
+mkdir -p "$DOOM_TMP_DIR/classes"
 "$JAVAC" \
-  -source 21 -target 21 \
-  -d "$TMPDIR/classes" \
+  --release 21 \
+  -d "$DOOM_TMP_DIR/classes" \
   -Xlint:none \
-  @"$TMPDIR/sources.txt" \
+  @"$DOOM_TMP_DIR/sources.txt" \
   2>&1 || {
     echo "ERROR: Compilation failed"
     exit 1
@@ -58,7 +65,7 @@ mkdir -p "$TMPDIR/classes"
 
 # Package into jar
 echo "Creating doom.jar..."
-"$JAR" cf "$OUTPUT_DIR/doom.jar" -C "$TMPDIR/classes" .
+"$JAR" cf "$OUTPUT_DIR/doom.jar" -C "$DOOM_TMP_DIR/classes" .
 
 # Copy WAD file if available
 WAD_FILE="$REPO_ROOT/container/doom/freedoom1.wad"

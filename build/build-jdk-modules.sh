@@ -19,6 +19,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/jdk-detect.sh"
 
 OUTPUT_DIR="${1:-$REPO_ROOT/build/jdk-wasm}"
 
@@ -36,23 +37,9 @@ MODULES="$MODULES,java.security.sasl,java.sql,java.sql.rowset,java.xml"
 MODULES="$MODULES,java.xml.crypto,jdk.compiler,jdk.crypto.ec,jdk.httpserver"
 MODULES="$MODULES,jdk.jshell,jdk.net,jdk.unsupported,jdk.zipfs"
 
-# Find jlink — prefer JAVA_HOME (must be JDK 21 to match our compiled JVM)
-if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/jlink" ]; then
-  JLINK="$JAVA_HOME/bin/jlink"
-elif command -v jlink &>/dev/null; then
-  JLINK=jlink
-else
-  echo "ERROR: jlink not found. Install JDK 21 or set JAVA_HOME."
-  exit 1
-fi
-
-# Verify JDK version (must be 21 to match our compiled JVM)
-JLINK_VERSION=$($JLINK --version 2>&1 | head -1)
-if ! echo "$JLINK_VERSION" | grep -q "^21"; then
-  echo "ERROR: jlink version is $JLINK_VERSION, but JDK 21 is required."
-  echo "Set JAVA_HOME to a JDK 21 installation."
-  exit 1
-fi
+JDK21_HOME="$(javabox_require_jdk "21" JAVABOX_JDK21_HOME \
+  "jlink for building the JDK 21 class library")"
+JLINK="$JDK21_HOME/bin/jlink"
 
 echo "Creating minimal JDK image using host jlink..."
 echo "jlink: $JLINK"

@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """
-build/serve.py — Dev server for JavaBox WASM output.
+build/serve.py — JavaBox development server.
 
-Serves the c2w output directory with the required COOP/COEP headers so that
-SharedArrayBuffer is available (needed for QEMU multi-threaded JIT).
+Serves legacy QEMU or direct-WASM output with the COOP/COEP headers required
+for SharedArrayBuffer.
 
 Usage:
-  python3 build/serve.py [output-dir] [port]
-  python3 build/serve.py ~/javabox-wasm 3000
-
-Defaults: output-dir=~/javabox-wasm  port=3000
+  python3 build/serve.py <output-dir> [port]
 """
 
 import http.server

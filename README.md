@@ -6,7 +6,20 @@ Run Java in the browser. No server-side JVM required.
 
 ![JavaBox Editor](docs/demo-screenshot.png)
 
-JavaBox compiles OpenJDK 21 (Zero interpreter) directly to WebAssembly via Emscripten. Write, compile, and execute Java code entirely inside the browser tab — no backend needed.
+JavaBox runs OpenJDK 21 (Zero interpreter) directly in WebAssembly via Emscripten. Write, compile, and execute Java code entirely inside the browser tab — no backend needed.
+
+## Quick start (run the demo locally)
+
+Run the deployed prebuilt artifacts without building from source:
+
+```sh
+./build/fetch-prebuilt.sh ~/javabox-wasm
+python3 build/serve.py ~/javabox-wasm 3000
+# http://localhost:3000/index.html   — Java editor + terminal
+# http://localhost:3000/doom.html    — Doom
+```
+
+`build/serve.py` is required: the runtime needs `SharedArrayBuffer`, which requires the `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers. A plain static file server will not work. The prebuilt artifacts are downloaded from <https://javabox-demo.brian-fec.workers.dev> (~76MB).
 
 ## Doom in the Browser
 
@@ -45,10 +58,16 @@ Doom runs entirely in Java with zero native UI dependencies:
 ## Repository Structure
 
 ```
-openjdk/            Forked OpenJDK 21u with Emscripten OS abstraction layer
+openjdk/            OpenJDK 21u git submodule (wasm-emscripten branch; port currently missing)
+third-party/
+  libffi-emscripten/ libffi git submodule for the Emscripten build
 container/          Dockerfile + CompileServer + Doom adapter classes
   doom/             Mocha Doom source + adapter (TerminalEngine, CanvasRenderer)
 build/              Build scripts (compile, link, deploy, serve)
+  build-direct.sh   Orchestrate the full direct WASM build
+  build-jdk-native.sh  Build JDK native static libraries
+  jdk-detect.sh     Detect the required JDK installations
+  fetch-prebuilt.sh Download deployed WASM artifacts
   jvm-main.c        JVM entry point + stdin bridge + Canvas/Audio/Input native methods
   CompileServer.java  In-memory compilation daemon
 web/                Frontend (index.html editor, doom.html game)
@@ -61,26 +80,51 @@ tests/              Playwright e2e tests
 
 | Tool | Purpose | Install |
 |------|---------|---------|
-| [Emscripten SDK](https://emscripten.org) | Compile OpenJDK to WASM | [emsdk](https://emscripten.org/docs/getting_started/downloads.html) |
-| Host JDK 21 | Build JDK class library + Doom | `brew install openjdk@21` |
-| Node.js 20+ | Local dev server, tests | `brew install node` |
+| [Emscripten SDK](https://emscripten.org) | Compile OpenJDK to WASM (`emcc`; tested with 5.0.2) | [emsdk](https://emscripten.org/docs/getting_started/downloads.html) |
+| Boot JDK 20 or 21 | Compile OpenJDK 21 | Set `JAVABOX_BOOT_JDK` to override detection |
+| JDK 21 (exactly) | Build the JDK 21 class library with jlink | `brew install openjdk@21`; set `JAVABOX_JDK21_HOME` to override detection |
+| Host `javac` 21+ | Compile Java sources with `--release 21` | Install a JDK 21 or newer |
+| Autotools + GNU grep | Build libffi and configure OpenJDK | macOS: `brew install autoconf automake libtool grep openjdk@21` |
+| Node.js 20+ | Playwright e2e tests | `brew install node` |
+| Python 3 | Local server | Install `python3` |
 
-## Build
+`emcc` must be on `PATH`; `build-direct.sh` also sources `~/emsdk/emsdk_env.sh` when available. JDK detection is implemented in `build/jdk-detect.sh`: override, `$JAVA_HOME`, macOS `java_home`, Homebrew, Linux `/usr/lib/jvm`, then `java` on `PATH`. It fails with an actionable message instead of silently selecting the wrong JDK. On macOS, OpenJDK configure requires GNU grep (`ggrep`).
+
+## Build from source
+
+Clone the submodules with the repository:
+
+```sh
+git clone --recursive https://github.com/bmarti44/javabox.git
+cd javabox
+```
+
+For an existing clone:
+
+```sh
+git submodule update --init --recursive
+```
 
 ### Full build (recommended)
 
 ```sh
+./build/build-direct.sh <output-dir> [--with-doom] [--clean] [--release]
 ./build/build-direct.sh ~/javabox-wasm --with-doom
 ```
 
 ### Individual steps
 
-```sh
-./build/build-jvm-wasm.sh           # Compile OpenJDK HotSpot Zero → libjvm.a
-./build/build-jdk-modules.sh        # jlink JDK class library on host
-./build/build-doom-jar.sh           # Compile Doom Java sources
-./build/link-direct-wasm.sh ~/out --with-doom  # Final emcc link → .mjs + .wasm + .data
-```
+The entry point runs these five steps:
+
+1. `build-jvm-wasm.sh` — build libffi, configure OpenJDK Zero, and build HotSpot `libjvm.a`.
+2. `build-jdk-native.sh` — build the `static-libs-image` (`libjava.a`, `libnio.a`, `libzip.a`, `libjimage.a`).
+3. `build-jdk-modules.sh` — use jlink to build the JDK 21 class library.
+4. `build-doom-jar.sh` — optionally compile the Doom Java sources.
+5. `link-direct-wasm.sh` — final emcc link to `javabox-direct.mjs`, `.wasm`, and `.data`.
+
+### Status / known blocker
+
+**The from-source build does not currently complete.** Step 1 fails during OpenJDK configure with `configure: error: unsupported operating system emscripten`. The pinned `openjdk` commit (`97a3d237`) is stock upstream OpenJDK 21u: it has no `src/hotspot/os/emscripten/`, no `src/hotspot/os_cpu/emscripten_zero/`, and no autoconf support for the `wasm32-unknown-emscripten` triplet. No branch of `bmarti44/openjdk` contains these files. To unblock this, push the Emscripten HotSpot OS/CPU port and autoconf platform support to the fork's `wasm-emscripten` branch, then update this repository's `openjdk` gitlink. Steps 2–5 are wired up but remain unverified end-to-end until step 1 completes.
 
 ### Serve locally
 
@@ -88,7 +132,7 @@ The WASM files require `Cross-Origin-Opener-Policy: same-origin` and `Cross-Orig
 
 ```sh
 python3 build/serve.py ~/javabox-wasm 3000
-# http://localhost:3000/index.html    — Java editor
+# http://localhost:3000/index.html    — Java editor + terminal
 # http://localhost:3000/doom.html     — Doom
 ```
 

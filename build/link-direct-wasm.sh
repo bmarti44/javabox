@@ -75,7 +75,7 @@ if [ ! -f "build/javabox-classes/CompileServer.class" ] || \
    [ "build/CompileServer.java" -nt "build/javabox-classes/CompileServer.class" ]; then
   echo "Compiling CompileServer.java..."
   mkdir -p build/javabox-classes
-  javac -d build/javabox-classes build/CompileServer.java
+  javac --release 21 -d build/javabox-classes build/CompileServer.java
 fi
 
 # ── Preload files ──────────────────────────────────────────────────────────────

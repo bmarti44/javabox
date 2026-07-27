@@ -15,16 +15,19 @@ Both modes expose the same CompileServer protocol (JBOX_PING/JBOX_COMPILE/JBOX_D
 ## Repository Layout
 
 ```
-openjdk/            Forked OpenJDK 21u with Emscripten OS layer (branch: wasm-emscripten)
-  src/hotspot/os/emscripten/     Emscripten OS abstraction (~15 files)
-  src/hotspot/os_cpu/emscripten_zero/  Zero CPU port for Emscripten (~11 files)
+openjdk/            OpenJDK 21u git submodule (branch: wasm-emscripten; pinned 97a3d237 is stock upstream 21u)
+third-party/
+  libffi-emscripten/ libffi git submodule (branch: wasm-emscripten)
 container/          Alpine Linux 3.21 + JDK 21 (Dockerfile) — QEMU mode
 build/
   build-direct.sh   Orchestrate full direct WASM build
   build-jvm-wasm.sh Compile OpenJDK Zero → libjvm.a via Emscripten
+  build-jdk-native.sh  Build JDK native static libraries
   build-jdk-modules.sh  jlink JDK class library on host
   build-doom-jar.sh     Compile Doom Java sources on host
   link-direct-wasm.sh   Final emcc link → javabox-direct.js + .wasm + .data
+  jdk-detect.sh      JDK discovery and version validation
+  fetch-prebuilt.sh  Download deployed WASM artifacts
   jvm-stdin-bridge.c    SharedArrayBuffer stdin ring buffer for direct mode
   convert.sh        c2w conversion — QEMU mode
   serve-config.json, serve.py  Local serving with COOP/COEP headers
@@ -37,6 +40,12 @@ examples/           Usage examples
 tests/              Playwright e2e tests (support both modes via JAVABOX_MODE env)
 PLAN.md             Full project specification and phase breakdown
 ```
+
+## Direct WASM build environment
+
+Use `JAVABOX_BOOT_JDK` for the boot JDK (20 or 21) and `JAVABOX_JDK21_HOME` for the exact JDK 21 used by jlink. `build/jdk-detect.sh` validates these versions and fails with an actionable message if detection cannot find a match. Do not patch build scripts to work around the configure failure: the failure is caused by missing Emscripten source and autoconf support in the pinned `openjdk` submodule, not by a script bug.
+
+The from-source build currently stops in step 1 with `configure: error: unsupported operating system emscripten`. The pinned commit is stock upstream OpenJDK 21u: it has no Emscripten HotSpot OS/CPU port or `wasm32-unknown-emscripten` autoconf support, and no branch of the fork contains those files. Steps 2–5 remain unverified end-to-end. Until the port is pushed to the fork and the `openjdk` gitlink is updated, run the deployed build with `./build/fetch-prebuilt.sh <output-dir>` and `python3 build/serve.py <output-dir> 3000`.
 
 ## Container Build
 
