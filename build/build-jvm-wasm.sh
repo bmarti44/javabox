@@ -68,6 +68,11 @@ build_libffi() {
     fi
   fi
 
+  # -DWASM_BIGINT must agree with the -sWASM_BIGINT used by link-direct-wasm.sh.
+  # src/wasm32/ffi.c gates its i64 marshalling on that macro: without it the
+  # JS trampoline splits every long into two i32s while the linked module
+  # actually passes BigInts, and the first JNI call taking or returning a long
+  # dies with "Cannot convert a BigInt value to a number".
   (
     cd "$LIBFFI_DIR"
     emconfigure ./configure \
@@ -75,7 +80,8 @@ build_libffi() {
       --prefix="$LIBFFI_PREFIX" \
       --enable-static \
       --disable-shared \
-      --disable-docs
+      --disable-docs \
+      CFLAGS="-O2 -DWASM_BIGINT"
   )
 
   local LIBFFI_MAKE_DIR
@@ -120,7 +126,17 @@ configure_openjdk() {
   local EMSDK_SYSROOT
   EMSDK_SYSROOT="$(em-config EMSCRIPTEN_ROOT)/cache/sysroot"
 
+  # The binutils replacements have to be given as absolute paths. The names
+  # alone resolve to the host's llvm-nm/llvm-strip, which cannot read wasm
+  # objects, and OpenJDK's build uses nm to extract symbols from the archives.
+  local EMSDK_LLVM_BIN
+  EMSDK_LLVM_BIN="$(em-config LLVM_ROOT)"
+
+  # --with-conf-name pins the build directory to build/emscripten-zero. Without
+  # it the default is <os>-<cpu>-<variants>-<debuglevel>, i.e.
+  # emscripten-zero-zero-release, which is not what the other scripts look for.
   bash configure \
+    --with-conf-name=emscripten-zero \
     --openjdk-target=wasm32-unknown-emscripten \
     --with-boot-jdk="$BOOT_JDK" \
     --with-toolchain-type=clang \
@@ -139,11 +155,12 @@ configure_openjdk() {
     --enable-jvm-feature-zero \
     --enable-jvm-feature-serialgc \
     --enable-jvm-feature-static-build \
+    --enable-static-build \
     --with-libffi="$LIBFFI_PREFIX" \
     --with-sysroot="$EMSDK_SYSROOT" \
     --with-extra-cflags="-pthread -sUSE_PTHREADS=1 -sSHARED_MEMORY=1 -D__EMSCRIPTEN__" \
     --with-extra-cxxflags="-pthread -sUSE_PTHREADS=1 -sSHARED_MEMORY=1 -D__EMSCRIPTEN__ -fwasm-exceptions" \
-    --with-extra-ldflags="-pthread" \
+    --with-extra-ldflags="-pthread -sERROR_ON_UNDEFINED_SYMBOLS=0" \
     --disable-warnings-as-errors \
     --with-debug-level=release \
     --with-native-debug-symbols=none \
@@ -152,9 +169,12 @@ configure_openjdk() {
     --with-cups=no \
     --with-alsa=no \
     --with-fontconfig=no \
-    --with-freetype=no \
     --with-num-cores=4 \
-    CC=emcc CXX=em++ AR=emar NM=llvm-nm \
+    CC=emcc CXX=em++ AR=emar \
+    NM="$EMSDK_LLVM_BIN/llvm-nm" \
+    STRIP="$EMSDK_LLVM_BIN/llvm-strip" \
+    OBJCOPY="$EMSDK_LLVM_BIN/llvm-objcopy" \
+    OBJDUMP="$EMSDK_LLVM_BIN/llvm-objdump" \
     BUILD_CC=cc BUILD_CXX=c++ \
     2>&1 | tee "$REPO_ROOT/build/configure-emscripten.log"
 
@@ -167,14 +187,21 @@ build_hotspot() {
   cd "$OPENJDK_DIR"
 
   # Build just the JVM static library
-  make CONF=emscripten-zero hotspot-only \
-    -j$(nproc 2>/dev/null || sysctl -n hw.ncpu) \
+  # hotspot-only skips prerequisites, so the hotspot build tools and the
+  # java.base include headers have to be made first. OpenJDK's make wrapper
+  # rejects -jN and wants JOBS=N.
+  local JOBS
+  JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+  make CONF=emscripten-zero buildtools-hotspot java.base-copy JOBS="$JOBS" \
     2>&1 | tee "$REPO_ROOT/build/build-hotspot.log"
+  make CONF=emscripten-zero hotspot-only JOBS="$JOBS" \
+    2>&1 | tee -a "$REPO_ROOT/build/build-hotspot.log"
 
   echo "HotSpot build complete."
 
-  # Check output
-  local LIBJVM="$BUILD_DIR/hotspot/variant-zero/libjvm/objs/libjvm.a"
+  # Check output. With a static build the archive is installed into the jdk
+  # image rather than left in hotspot/variant-zero/libjvm/objs/.
+  local LIBJVM="$BUILD_DIR/jdk/lib/zero/libjvm.a"
   if [ -f "$LIBJVM" ]; then
     echo "SUCCESS: libjvm.a built at $LIBJVM"
     ls -lh "$LIBJVM"

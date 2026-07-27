@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # build-jdk-native.sh — Build OpenJDK native libraries to WASM with Emscripten
 #
-# Uses OpenJDK's static-libs-image target to produce the native archives needed
-# by the final WASM link.
+# Uses OpenJDK's java.base-static-libs target to produce the native archives
+# needed by the final WASM link.
 
 set -euo pipefail
 
@@ -17,7 +17,7 @@ FORCE=false
 
 for arg in "$@"; do
   case "$arg" in
-    --force) FORCE=true ;;
+    --force) FORCE=true ;;  # accepted for compatibility; make is always run now
     *)
       if [ "$OUTPUT_DIR" = "$REPO_ROOT/build/jdk-native-wasm" ]; then
         OUTPUT_DIR="$arg"
@@ -49,52 +49,38 @@ fi
 
 ARCHIVES=(libjava.a libnio.a libzip.a libjimage.a)
 
-all_archives_are_fresh() {
-  local archive
-  for archive in "${ARCHIVES[@]}"; do
-    if [ ! -f "$OUTPUT_DIR/$archive" ] || [ ! "$OUTPUT_DIR/$archive" -nt "$BUILD_DIR" ]; then
-      return 1
-    fi
-  done
-}
-
 echo "=== Building JDK native libraries for WASM ==="
 echo "Source: $OPENJDK_DIR"
 echo "Output: $OUTPUT_DIR/"
 echo ""
 
 # ── Build OpenJDK static libraries ────────────────────────────────────────────
-if [ "$FORCE" = false ] && all_archives_are_fresh; then
-  echo "JDK native libraries are already up to date. Use --force to rebuild."
-else
-  JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
-  echo "Building OpenJDK static libraries..."
-  (
-    cd "$OPENJDK_DIR"
-    make CONF=emscripten-zero static-libs-image -j"$JOBS"
-  )
-fi
+# Always invoke make and let it decide what is stale. An mtime shortcut here
+# would have to know every source the archives depend on, and getting that wrong
+# silently ships an old .o - which is exactly what happened when this script
+# compared the copied archives against the build directory's timestamp.
+JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
+echo "Building OpenJDK static libraries..."
+# java.base-static-libs, not static-libs-image: only java.base's natives are
+# linked into the WASM module, and the full image target also builds
+# java.desktop, which needs an X11 toolkit that does not exist here.
+# OpenJDK's make wrapper rejects -jN and wants JOBS=N.
+(
+  cd "$OPENJDK_DIR"
+  make CONF=emscripten-zero java.base-static-libs JOBS="$JOBS"
+)
 
 # ── Locate and copy static libraries ──────────────────────────────────────────
-# static-libs-image always writes here for this OpenJDK build configuration.
-STATIC_LIBS_LIB_DIR="$BUILD_DIR/images/static-libs/lib"
-if [ ! -d "$STATIC_LIBS_LIB_DIR" ]; then
-  STATIC_LIBS_LIB_DIR="$(
-    find "$BUILD_DIR/images" -type d -path '*/static-libs/lib' -print -quit 2>/dev/null || true
-  )"
-fi
-
-if [ ! -d "$STATIC_LIBS_LIB_DIR" ]; then
-  echo "ERROR: OpenJDK static-libs image directory not found." >&2
-  echo "Expected: $BUILD_DIR/images/static-libs/lib" >&2
-  exit 1
-fi
+# With STATIC_LIBS=true each library is archived next to its objects rather than
+# in an image directory.
+STATIC_LIBS_LIB_DIR="$BUILD_DIR/support/native/java.base"
 
 mkdir -p "$OUTPUT_DIR"
 missing=()
 for archive in "${ARCHIVES[@]}"; do
-  if [ -f "$STATIC_LIBS_LIB_DIR/$archive" ]; then
-    cp "$STATIC_LIBS_LIB_DIR/$archive" "$OUTPUT_DIR/$archive"
+  src="$STATIC_LIBS_LIB_DIR/${archive%.a}/static/$archive"
+  if [ -f "$src" ]; then
+    cp "$src" "$OUTPUT_DIR/$archive"
   else
     missing+=("$archive")
   fi

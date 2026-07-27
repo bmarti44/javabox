@@ -10,3 +10,12 @@ build/javabox-classes/
 build/doom-assets/
 build/**/*.jar
 tests/screenshots/
+
+# Linker output: build/www is the default --with-doom target dir, and
+# static-symbols.c is regenerated from an nm scan on every link.
+build/www/
+build/static-symbols.c
+build/static-symbols.o
+
+# Freedoom's IWAD is fetched by the user, not redistributed here (see README).
+container/doom/freedoom1.wad

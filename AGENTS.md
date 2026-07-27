@@ -15,7 +15,7 @@ Both modes expose the same CompileServer protocol (JBOX_PING/JBOX_COMPILE/JBOX_D
 ## Repository Layout
 
 ```
-openjdk/            OpenJDK 21u git submodule (branch: wasm-emscripten; pinned 97a3d237 is stock upstream 21u)
+openjdk/            OpenJDK 21u git submodule (branch: wasm-emscripten — carries the Emscripten port)
 third-party/
   libffi-emscripten/ libffi git submodule (branch: wasm-emscripten)
 container/          Alpine Linux 3.21 + JDK 21 (Dockerfile) — QEMU mode
@@ -43,9 +43,26 @@ PLAN.md             Full project specification and phase breakdown
 
 ## Direct WASM build environment
 
-Use `JAVABOX_BOOT_JDK` for the boot JDK (20 or 21) and `JAVABOX_JDK21_HOME` for the exact JDK 21 used by jlink. `build/jdk-detect.sh` validates these versions and fails with an actionable message if detection cannot find a match. Do not patch build scripts to work around the configure failure: the failure is caused by missing Emscripten source and autoconf support in the pinned `openjdk` submodule, not by a script bug.
+Use `JAVABOX_BOOT_JDK` for the boot JDK (20 or 21) and `JAVABOX_JDK21_HOME` for the exact JDK 21 used by jlink. `build/jdk-detect.sh` validates these versions and fails with an actionable message if detection cannot find a match.
 
-The from-source build currently stops in step 1 with `configure: error: unsupported operating system emscripten`. The pinned commit is stock upstream OpenJDK 21u: it has no Emscripten HotSpot OS/CPU port or `wasm32-unknown-emscripten` autoconf support, and no branch of the fork contains those files. Steps 2–5 remain unverified end-to-end. Until the port is pushed to the fork and the `openjdk` gitlink is updated, run the deployed build with `./build/fetch-prebuilt.sh <output-dir>` and `python3 build/serve.py <output-dir> 3000`.
+Doom needs an IWAD that is not redistributed here: put Freedoom's `freedoom1.wad` in `container/doom/` before building with `--with-doom` (see README). Everything else builds without it.
+
+## The OpenJDK Emscripten port
+
+The port lives on the `wasm-emscripten` branch of the `openjdk` submodule. Its shape, so changes land in the right place:
+
+- **Two translation units carry real logic:** `src/hotspot/os/emscripten/os_emscripten.cpp` and `src/hotspot/os_cpu/emscripten_zero/os_emscripten_zero.cpp`. HotSpot compiles those directories wholesale, so both need their full companion file sets (modelled on `os/bsd` and `os_cpu/bsd_zero`), but the rest are thin headers and stubs.
+- **`src/hotspot/os/posix/*` is reused unchanged.** Autoconf sets `VAR_OS_TYPE=unix` for `emscripten`, so threading, semaphores and perf memory come from the stock POSIX layer. Do not fork those files.
+- **`src/hotspot/cpu/zero/*` is stock.** There is no CPU-port work; Zero already targets a stack machine.
+- **There is no `src/java.base/emscripten/`.** java.base natives build from `share/` + `unix/` only; that work is make-system wiring, not new C.
+- **libnet is deliberately not linked.** `_NET_*`, `_initInetAddressIDs` and friends become auto-generated JS stubs via `-sERROR_ON_UNDEFINED_SYMBOLS=0`. Networking being stubbed is by design, not a bug to chase.
+
+Two mechanisms replace things WASM does not have:
+
+- **No dynamic loader.** `os::dll_lookup` in `os_emscripten.cpp` resolves JNI entry points through a static name → address table that `build/link-direct-wasm.sh` generates into `build/static-symbols.c`. That table is also the only thing referencing those natives, so without it wasm-ld garbage-collects every one of them. It scans the four java.base archives *and* `build/jvm-main.o`, which holds the headless AWT `initIDs()` stubs. `build/build-jdk-modules.sh` touches empty placeholder `.so` files so `System.loadLibrary` still succeeds.
+- **No process stdin.** In the browser, fd 0 is a SharedArrayBuffer ring buffer in `build/jvm-main.c`; `handleRead`/`handleAvailable` in `src/java.base/unix/native/libjava/io_util_md.c` have `__EMSCRIPTEN__` branches that drain it. Under Node.js the flag stays off and the normal `read()` path is used.
+
+Known, understood divergences from the shipped reference module: the rebuilt binary imports `os_getChildren`, `os_getCmdlineAndUserInfo`, `os_getParentPidAndTimings`, `os_initNative` (ProcessHandleImpl has no emscripten variant) and `sigsuspend` (from `signals_posix.cpp`'s SR_handler). None are reachable in WASM.
 
 ## Container Build
 

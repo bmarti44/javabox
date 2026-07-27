@@ -183,6 +183,18 @@ int jvm_use_ring_buffer_stdin(void) {
     return use_ring_buffer_stdin;
 }
 
+/* Bytes currently sitting in the ring buffer, for handleAvailable in
+ * io_util_md.c. BufferedInputStream.implRead() calls available() before every
+ * read; fd 0 is not seekable here, so the stock implementation falls through to
+ * lseek() and throws "Invalid seek". Never blocks - 0 just means "nothing
+ * buffered yet", which is what available() is supposed to report. */
+int jvm_stdin_available(void) {
+    if (!stdin_buf) return 0;
+    int32_t wp = __atomic_load_n(&stdin_buf[WRITE_POS_IDX], __ATOMIC_ACQUIRE);
+    int32_t rp = __atomic_load_n(&stdin_buf[READ_POS_IDX], __ATOMIC_RELAXED);
+    return (wp - rp + RING_BUF_SIZE) % RING_BUF_SIZE;
+}
+
 /* Debug helpers — check ring buffer state from JavaScript */
 EMSCRIPTEN_KEEPALIVE
 int jvm_debug_stdin_state(void) {
@@ -427,13 +439,16 @@ int main(int argc, char** argv) {
     /* Set environment variables (Doom ConfigManager needs HOME) */
     setenv("HOME", "/root", 1);
     setenv("USER", "root", 1);
+    /* os::jvm_path() reads JAVA_HOME to locate the staged JDK. It runs before
+       -Djava.home is parsed, so the property alone is too late. */
+    setenv("JAVA_HOME", "/opt/jdk", 1);
 
     /* Initialize stdin ring buffer before JVM starts */
     init_stdin_buffer();
     setup_stdin_hook((void*)stdin_buf);
 
     JavaVMInitArgs vm_args;
-    JavaVMOption options[20];
+    JavaVMOption options[40];
     int nOptions = 0;
 
     options[nOptions++].optionString = "-Djava.home=/opt/jdk";
@@ -450,6 +465,14 @@ int main(int argc, char** argv) {
     options[nOptions++].optionString = "-Djava.class.path=/opt/javabox:/opt/javabox/doom.jar";
     options[nOptions++].optionString = "-Duser.home=/root";
     options[nOptions++].optionString = "-Duser.dir=/root";
+
+    /* Anything passed in argv becomes an extra JVM option. Emscripten fills argv
+       from Module.arguments, so a boot can be traced (-Xlog:startuptime, -Xlog:gc,
+       …) from the JS side without relinking the whole module. These come last so
+       they override the defaults above. */
+    for (int i = 1; i < argc && nOptions < (int)(sizeof(options) / sizeof(options[0])); i++) {
+        options[nOptions++].optionString = argv[i];
+    }
 
     vm_args.version = JNI_VERSION_21;
     vm_args.nOptions = nOptions;

@@ -72,6 +72,11 @@ WAD_FILE="$REPO_ROOT/container/doom/freedoom1.wad"
 if [ -f "$WAD_FILE" ]; then
   cp "$WAD_FILE" "$OUTPUT_DIR/freedoom1.wad"
   echo "Copied freedoom1.wad"
+else
+  echo "WARNING: $WAD_FILE not found - doom.html will fail to start." >&2
+  echo "  curl -sL -o /tmp/freedoom.zip \\" >&2
+  echo "    https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip" >&2
+  echo "  unzip -j /tmp/freedoom.zip 'freedoom-0.13.0/freedoom1.wad' -d container/doom/" >&2
 fi
 
 # Copy doom.cfg if available

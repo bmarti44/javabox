@@ -58,7 +58,7 @@ Doom runs entirely in Java with zero native UI dependencies:
 ## Repository Structure
 
 ```
-openjdk/            OpenJDK 21u git submodule (wasm-emscripten branch; port currently missing)
+openjdk/            OpenJDK 21u git submodule (wasm-emscripten branch — carries the Emscripten port)
 third-party/
   libffi-emscripten/ libffi git submodule for the Emscripten build
 container/          Dockerfile + CompileServer + Doom adapter classes
@@ -117,14 +117,28 @@ git submodule update --init --recursive
 The entry point runs these five steps:
 
 1. `build-jvm-wasm.sh` — build libffi, configure OpenJDK Zero, and build HotSpot `libjvm.a`.
-2. `build-jdk-native.sh` — build the `static-libs-image` (`libjava.a`, `libnio.a`, `libzip.a`, `libjimage.a`).
+2. `build-jdk-native.sh` — build java.base's native archives (`libjava.a`, `libnio.a`, `libzip.a`, `libjimage.a`).
 3. `build-jdk-modules.sh` — use jlink to build the JDK 21 class library.
 4. `build-doom-jar.sh` — optionally compile the Doom Java sources.
 5. `link-direct-wasm.sh` — final emcc link to `javabox-direct.mjs`, `.wasm`, and `.data`.
 
-### Status / known blocker
+Expect the first build to take a while — step 1 compiles all of HotSpot. Later
+runs are incremental.
 
-**The from-source build does not currently complete.** Step 1 fails during OpenJDK configure with `configure: error: unsupported operating system emscripten`. The pinned `openjdk` commit (`97a3d237`) is stock upstream OpenJDK 21u: it has no `src/hotspot/os/emscripten/`, no `src/hotspot/os_cpu/emscripten_zero/`, and no autoconf support for the `wasm32-unknown-emscripten` triplet. No branch of `bmarti44/openjdk` contains these files. To unblock this, push the Emscripten HotSpot OS/CPU port and autoconf platform support to the fork's `wasm-emscripten` branch, then update this repository's `openjdk` gitlink. Steps 2–5 are wired up but remain unverified end-to-end until step 1 completes.
+### Doom assets
+
+`build-doom-jar.sh` compiles the Doom Java sources from `container/doom/`, but the
+IWAD is not redistributed here. Drop [Freedoom](https://freedoom.github.io)'s
+`freedoom1.wad` into `container/doom/` before building with `--with-doom`:
+
+```sh
+curl -sL -o /tmp/freedoom.zip \
+  https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip
+unzip -j /tmp/freedoom.zip 'freedoom-0.13.0/freedoom1.wad' -d container/doom/
+```
+
+Without it the module still builds and `index.html` works; only `doom.html` is
+affected.
 
 ### Serve locally
 
